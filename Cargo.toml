@@ -1,0 +1,74 @@
+[package]
+name = "xmlschema"
+version = "0.1.0"
+edition = "2021"
+authors = ["xmlschema-rs contributors"]
+license = "MIT"
+description = "A Rust implementation of XML Schema (XSD 1.0 and XSD 1.1) for validation and data conversion"
+repository = "https://github.com/ParapluOU/xmlschema-rs"
+keywords = ["xml", "xsd", "schema", "validation", "parser"]
+categories = ["parser-implementations", "encoding", "data-structures"]
+readme = "README.md"
+
+[lib]
+name = "xmlschema"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xmlschema"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+# XML parsing
+quick-xml = "0.31"
+roxmltree = "0.19"
+
+# Error handling
+thiserror = "1.0"
+
+# Data structures
+indexmap = "2.0"  # Ordered maps
+
+# Decimal numbers for XSD decimal type
+rust_decimal = "1.33"
+
+# Date/time handling
+chrono = "0.4"
+
+# URL handling
+url = "2.5"
+
+# Regex support
+regex = "1.10"
+once_cell = "1.19"  # For lazy static regex compilation
+
+# Base64 encoding/decoding
+base64 = "0.21"
+
+# JSON support for converters
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Optional: CLI support
+clap = { version = "4.4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+# Testing
+proptest = "1.4"  # Property-based testing
+criterion = "0.5"  # Benchmarking
+pretty_assertions = "1.4"  # Better test failure messages
+tempfile = "3.8"  # Temporary files for tests
+
+[features]
+default = []
+cli = ["dep:clap"]
+full = ["cli"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
+[profile.bench]
+inherits = "release"
