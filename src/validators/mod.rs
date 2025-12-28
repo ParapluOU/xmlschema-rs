@@ -2,29 +2,42 @@
 //!
 //! This module contains the core validation logic for XML Schema.
 
-// Sub-modules (to be implemented in waves)
-// pub mod base;         // Wave 4: Base validator classes
-// pub mod exceptions;   // Wave 4: Validator-specific exceptions
-// pub mod helpers;      // Wave 4: Helper utilities
-// pub mod particles;    // Wave 4: Particle components
-// pub mod facets;       // Wave 5: Facet validators
-// pub mod builtins;     // Wave 5: Built-in types
-// pub mod simple_types; // Wave 5: Simple type validators
-// pub mod attributes;   // Wave 5: Attribute validators
-// pub mod notations;    // Wave 5: Notation declarations
-// pub mod wildcards;    // Wave 6: Wildcard validators
-// pub mod groups;       // Wave 6: Model group validators
-// pub mod models;       // Wave 6: Content model validators
-// pub mod complex_types;// Wave 6: Complex type validators
-// pub mod elements;     // Wave 6: Element validators
-// pub mod identities;   // Wave 7: Identity constraints
-// pub mod globals;      // Wave 7: Global declarations
-// pub mod builders;     // Wave 7: Schema builders
-// pub mod schemas;      // Wave 7: Schema validator (main)
-// pub mod validation;   // Wave 7: Validation orchestration
-// pub mod assertions;   // Wave 8: XSD 1.1 assertions
+// Wave 4: Foundation modules
+pub mod base;
+// pub mod context;      // Validation context
+// pub mod helpers;      // Helper utilities
+// pub mod particles;    // Particle components
 
-/// Placeholder for Schema struct
+// Wave 5: Type system
+// pub mod facets;       // Facet validators
+// pub mod builtins;     // Built-in types
+// pub mod simple_types; // Simple type validators
+// pub mod attributes;   // Attribute validators
+// pub mod notations;    // Notation declarations
+
+// Wave 6: Complex structures
+// pub mod wildcards;    // Wildcard validators
+// pub mod groups;       // Model group validators
+// pub mod models;       // Content model validators
+// pub mod complex_types;// Complex type validators
+// pub mod elements;     // Element validators
+
+// Wave 7: Advanced validation
+// pub mod identities;   // Identity constraints
+// pub mod globals;      // Global declarations
+// pub mod builders;     // Schema builders
+// pub mod schemas;      // Schema validator (main)
+
+// Wave 8: XSD 1.1
+// pub mod assertions;   // XSD 1.1 assertions
+
+// Re-exports
+pub use base::{
+    AttributeValidator, ElementValidator, TypeValidator, ValidationMode, ValidationStatus,
+    ValidityStatus, Validator, XsdValidator,
+};
+
+/// Placeholder for Schema struct (will be replaced with actual implementation)
 pub struct Schema {
     _private: (),
 }
