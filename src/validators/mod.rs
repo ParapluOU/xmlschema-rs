@@ -9,7 +9,7 @@ pub mod base;
 // pub mod particles;    // Particle components
 
 // Wave 5: Type system
-// pub mod facets;       // Facet validators
+pub mod facets;       // Facet validators ✅
 // pub mod builtins;     // Built-in types
 // pub mod simple_types; // Simple type validators
 // pub mod attributes;   // Attribute validators
@@ -35,6 +35,10 @@ pub mod base;
 pub use base::{
     AttributeValidator, ElementValidator, TypeValidator, ValidationMode, ValidationStatus,
     ValidityStatus, Validator, XsdValidator,
+};
+pub use facets::{
+    EnumerationFacet, LengthFacet, MaxInclusiveFacet, MaxLengthFacet, MinInclusiveFacet,
+    MinLengthFacet, NumericBound, PatternFacet, WhiteSpace,
 };
 
 /// Placeholder for Schema struct (will be replaced with actual implementation)
