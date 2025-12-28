@@ -55,6 +55,9 @@ pub mod validators;
 pub mod converters;
 // pub mod dataobjects;  // Wave 9
 
+// Testing support
+pub mod comparison;
+
 // XPath support - Wave 10
 // pub mod xpath;
 

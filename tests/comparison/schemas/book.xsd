@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:book="http://example.com/book"
+           targetNamespace="http://example.com/book"
+           elementFormDefault="qualified">
+
+    <!-- Root element -->
+    <xs:element name="book" type="book:bookType"/>
+
+    <!-- Complex type for book -->
+    <xs:complexType name="bookType">
+        <xs:sequence>
+            <xs:element name="title" type="xs:string"/>
+            <xs:element name="author" type="book:personType" maxOccurs="unbounded"/>
+            <xs:element name="published" type="xs:date" minOccurs="0"/>
+            <xs:element name="pages" type="xs:positiveInteger" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attribute name="isbn" type="book:isbnType" use="required"/>
+        <xs:attribute name="edition" type="xs:positiveInteger" default="1"/>
+    </xs:complexType>
+
+    <!-- Complex type for person -->
+    <xs:complexType name="personType">
+        <xs:sequence>
+            <xs:element name="firstName" type="xs:string"/>
+            <xs:element name="lastName" type="xs:string"/>
+            <xs:element name="email" type="book:emailType" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <!-- Simple type for ISBN -->
+    <xs:simpleType name="isbnType">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="\d{3}-\d{1,5}-\d{1,7}-\d{1,7}-\d{1}"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- Simple type for email -->
+    <xs:simpleType name="emailType">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="[^@]+@[^@]+\.[^@]+"/>
+            <xs:maxLength value="255"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- Simple type with enumeration -->
+    <xs:simpleType name="statusType">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="draft"/>
+            <xs:enumeration value="published"/>
+            <xs:enumeration value="out-of-print"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+</xs:schema>

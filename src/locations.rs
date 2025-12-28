@@ -3,8 +3,8 @@
 //! This module handles resolution of resource locations (URLs, file paths, etc.)
 //! for loading schemas and XML documents.
 
-use crate::error::{Error, Result};
-use std::path::{Path, PathBuf};
+use crate::error::Result;
+use std::path::PathBuf;
 use url::Url;
 
 /// Resource location - can be a URL, file path, or string identifier

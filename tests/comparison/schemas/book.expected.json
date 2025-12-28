@@ -1,0 +1,161 @@
+{
+  "complex_types": [
+    {
+      "attributes": [
+        {
+          "default": "1",
+          "name": "edition",
+          "type": "{http://www.w3.org/2001/XMLSchema}positiveInteger",
+          "use": "optional"
+        },
+        {
+          "default": null,
+          "name": "isbn",
+          "type": "{http://example.com/book}isbnType",
+          "use": "required"
+        }
+      ],
+      "category": "XsdComplexType",
+      "child_elements": [
+        {
+          "max_occurs": 1,
+          "min_occurs": 1,
+          "name": "{http://example.com/book}title",
+          "type": "{http://www.w3.org/2001/XMLSchema}string"
+        },
+        {
+          "max_occurs": null,
+          "min_occurs": 1,
+          "name": "{http://example.com/book}author",
+          "type": "{http://example.com/book}personType"
+        },
+        {
+          "max_occurs": 1,
+          "min_occurs": 0,
+          "name": "{http://example.com/book}published",
+          "type": "{http://www.w3.org/2001/XMLSchema}date"
+        },
+        {
+          "max_occurs": 1,
+          "min_occurs": 0,
+          "name": "{http://example.com/book}pages",
+          "type": "{http://www.w3.org/2001/XMLSchema}positiveInteger"
+        }
+      ],
+      "content_model": "XsdGroup",
+      "is_complex": true,
+      "is_simple": false,
+      "name": "{http://example.com/book}bookType",
+      "qualified_name": "{http://example.com/book}bookType"
+    },
+    {
+      "category": "XsdComplexType",
+      "child_elements": [
+        {
+          "max_occurs": 1,
+          "min_occurs": 1,
+          "name": "{http://example.com/book}firstName",
+          "type": "{http://www.w3.org/2001/XMLSchema}string"
+        },
+        {
+          "max_occurs": 1,
+          "min_occurs": 1,
+          "name": "{http://example.com/book}lastName",
+          "type": "{http://www.w3.org/2001/XMLSchema}string"
+        },
+        {
+          "max_occurs": 1,
+          "min_occurs": 0,
+          "name": "{http://example.com/book}email",
+          "type": "{http://example.com/book}emailType"
+        }
+      ],
+      "content_model": "XsdGroup",
+      "is_complex": true,
+      "is_simple": false,
+      "name": "{http://example.com/book}personType",
+      "qualified_name": "{http://example.com/book}personType"
+    }
+  ],
+  "element_form_default": "qualified",
+  "root_elements": [
+    {
+      "default": null,
+      "max_occurs": 1,
+      "min_occurs": 1,
+      "name": "{http://example.com/book}book",
+      "nillable": false,
+      "qualified_name": "{http://example.com/book}book",
+      "type": {
+        "attributes": [
+          {
+            "default": "1",
+            "name": "edition",
+            "type": "{http://www.w3.org/2001/XMLSchema}positiveInteger",
+            "use": "optional"
+          },
+          {
+            "default": null,
+            "name": "isbn",
+            "type": "{http://example.com/book}isbnType",
+            "use": "required"
+          }
+        ],
+        "category": "XsdComplexType",
+        "child_elements": [
+          {
+            "max_occurs": 1,
+            "min_occurs": 1,
+            "name": "{http://example.com/book}title",
+            "type": "{http://www.w3.org/2001/XMLSchema}string"
+          },
+          {
+            "max_occurs": null,
+            "min_occurs": 1,
+            "name": "{http://example.com/book}author",
+            "type": "{http://example.com/book}personType"
+          },
+          {
+            "max_occurs": 1,
+            "min_occurs": 0,
+            "name": "{http://example.com/book}published",
+            "type": "{http://www.w3.org/2001/XMLSchema}date"
+          },
+          {
+            "max_occurs": 1,
+            "min_occurs": 0,
+            "name": "{http://example.com/book}pages",
+            "type": "{http://www.w3.org/2001/XMLSchema}positiveInteger"
+          }
+        ],
+        "content_model": "XsdGroup",
+        "is_complex": true,
+        "is_simple": false,
+        "name": "{http://example.com/book}bookType",
+        "qualified_name": "{http://example.com/book}bookType"
+      }
+    }
+  ],
+  "schema_location": "file:///private/tmp/xmlschema-rs/tests/comparison/schemas/book.xsd",
+  "simple_types": [
+    {
+      "base_type": "{http://www.w3.org/2001/XMLSchema}string",
+      "category": "XsdAtomicRestriction",
+      "name": "{http://example.com/book}emailType",
+      "qualified_name": "{http://example.com/book}emailType"
+    },
+    {
+      "base_type": "{http://www.w3.org/2001/XMLSchema}string",
+      "category": "XsdAtomicRestriction",
+      "name": "{http://example.com/book}isbnType",
+      "qualified_name": "{http://example.com/book}isbnType"
+    },
+    {
+      "base_type": "{http://www.w3.org/2001/XMLSchema}string",
+      "category": "XsdAtomicRestriction",
+      "name": "{http://example.com/book}statusType",
+      "qualified_name": "{http://example.com/book}statusType"
+    }
+  ],
+  "target_namespace": "http://example.com/book"
+}

@@ -119,7 +119,7 @@ impl Document {
                     element_stack.push(element);
                 }
                 Ok(Event::End(_)) => {
-                    if let Some(mut current) = element_stack.pop() {
+                    if let Some(current) = element_stack.pop() {
                         if let Some(parent) = element_stack.last_mut() {
                             parent.add_child(current);
                         } else {

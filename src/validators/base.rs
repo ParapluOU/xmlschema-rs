@@ -2,7 +2,7 @@
 //!
 //! This module provides the foundation for all XSD validators.
 
-use crate::error::{ParseError, Result, ValidationError};
+use crate::error::{ParseError, Result};
 use crate::namespaces::QName;
 use std::fmt;
 

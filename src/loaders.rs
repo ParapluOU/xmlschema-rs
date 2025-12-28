@@ -6,7 +6,6 @@ use crate::error::{Error, Result};
 use crate::limits::Limits;
 use crate::locations::Location;
 use std::fs;
-use std::io::Read;
 
 /// Resource loader for schemas and documents
 #[derive(Debug)]

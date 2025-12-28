@@ -3,7 +3,6 @@
 //! This module implements XSD facets that constrain simple types.
 
 use crate::error::{Result, ValidationError};
-use crate::validators::base::Validator;
 use regex::Regex;
 use rust_decimal::Decimal;
 use std::fmt;
