@@ -6,14 +6,12 @@
 pub mod base;
 pub mod helpers;         // Helper utilities ✅
 pub mod particles;       // Particle components ✅
-// pub mod context;      // Validation context
 
 // Wave 5: Type system
 pub mod facets;       // Facet validators ✅
 pub mod builtins;     // Built-in types ✅
 pub mod simple_types; // Simple type validators ✅
 pub mod attributes;   // Attribute validators ✅
-// pub mod notations;    // Notation declarations
 
 // Wave 6: Complex structures
 pub mod wildcards;       // Wildcard validators ✅
@@ -28,8 +26,12 @@ pub mod globals;         // Global declarations ✅
 pub mod builders;        // Schema builders ✅
 pub mod schemas;         // Schema validator (main) ✅
 
-// Wave 8: XSD 1.1
-// pub mod assertions;   // XSD 1.1 assertions
+// Wave 8: XSD 1.1 and exceptions
+pub mod assertions;      // XSD 1.1 assertions ✅
+pub mod exceptions;      // Validation exceptions ✅
+
+// Wave 9: XML validation
+pub mod validation;      // Validation context and traits ✅
 
 // Re-exports
 pub use base::{
@@ -109,6 +111,18 @@ pub use schemas::{
     DerivationDefault, FormDefault, NamespaceView, SchemaCollection, SchemaImport,
     SchemaInclude, SchemaSource, ValidationResult, XsdSchema,
     XML_NAMESPACE, XSI_NAMESPACE, VC_NAMESPACE,
+};
+pub use assertions::{
+    AssertionList, XPathDefaultNamespace, XsdAssert,
+};
+pub use exceptions::{
+    ChildrenValidationError, CircularityError, DecodeError, EncodeError,
+    ModelDepthError, ModelError, NotBuiltError, StopValidation, ValidationError,
+    XsdValidatorError,
+};
+pub use validation::{
+    DecimalTypePreference, DecodeContext, EncodeContext, ValidationContext,
+    ValidationOutcome, XmlDecoder, XmlEncoder, XmlValidator,
 };
 
 /// Type alias for backward compatibility
