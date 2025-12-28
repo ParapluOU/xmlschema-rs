@@ -53,7 +53,8 @@ pub mod validators;
 
 // Data conversion - Wave 9
 pub mod converters;
-// pub mod dataobjects;  // Wave 9
+pub mod exports;
+// pub mod dataobjects;  // Later
 
 // Testing support
 pub mod comparison;
