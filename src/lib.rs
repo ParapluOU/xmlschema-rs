@@ -59,8 +59,8 @@ pub mod exports;
 // Testing support
 pub mod comparison;
 
-// XPath support - Wave 10
-// pub mod xpath;
+// XPath support - Wave 11
+pub mod xpath;
 
 // Utilities - Wave 11
 // pub mod arguments;
