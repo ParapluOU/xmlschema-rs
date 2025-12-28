@@ -6,6 +6,11 @@
 use std::process::Command;
 use xmlschema::comparison::{SchemaDump, SimpleTypeInfo, TypeInfo};
 
+// Schema bundles for integration testing
+use schemas_core::{SchemaBundle, SchemaBundleExt};
+use schemas_dita::Dita12;
+use schemas_niso_sts::NisoSts;
+
 /// Path to the Python venv created for testing
 const PYTHON_VENV: &str = "tests/comparison/venv/bin/python";
 
@@ -232,4 +237,122 @@ fn test_compare_book_schema() {
         }
         panic!("Schemas do not match: {} differences", differences.len());
     }
+}
+
+// =============================================================================
+// Schema bundle tests (DITA, NISO)
+// =============================================================================
+
+#[test]
+fn test_dita_schema_bundle_available() {
+    // Verify DITA schema bundle is accessible
+    let summary = Dita12::summary();
+    assert_eq!(summary.name, "DITA");
+    assert_eq!(summary.version, "1.2");
+    assert!(summary.file_count > 0, "DITA bundle should have files");
+
+    // Check for main XSD files
+    let xsd_files: Vec<_> = Dita12::files_by_extension("xsd").collect();
+    assert!(!xsd_files.is_empty(), "DITA bundle should have XSD files");
+
+    eprintln!("DITA 1.2: {} files, {} bytes total", summary.file_count, summary.total_size);
+}
+
+#[test]
+fn test_niso_schema_bundle_available() {
+    // Verify NISO STS schema bundle is accessible
+    let summary = NisoSts::summary();
+    assert_eq!(summary.name, "NISO STS");
+    assert!(summary.file_count > 0, "NISO bundle should have files");
+
+    // Check for XSD files
+    let xsd_files: Vec<_> = NisoSts::files_by_extension("xsd").collect();
+    assert!(!xsd_files.is_empty(), "NISO bundle should have XSD files");
+
+    eprintln!("NISO STS: {} files, {} bytes total", summary.file_count, summary.total_size);
+}
+
+#[test]
+fn test_dita_schema_files_readable() {
+    // Check that we can read DITA schema content
+    for file in Dita12::files_by_extension("xsd").take(5) {
+        let content = file.content_str().expect("XSD should be valid UTF-8");
+        assert!(
+            content.contains("schema") || content.contains("Schema"),
+            "XSD file {} should contain schema content",
+            file.path
+        );
+    }
+}
+
+#[test]
+fn test_niso_schema_files_readable() {
+    // Check that we can read NISO schema content
+    for file in NisoSts::files_by_extension("xsd").take(5) {
+        let content = file.content_str().expect("XSD should be valid UTF-8");
+        assert!(
+            content.contains("schema") || content.contains("Schema"),
+            "XSD file {} should contain schema content",
+            file.path
+        );
+    }
+}
+
+#[test]
+#[ignore = "Rust schema parser not yet implemented"]
+fn test_parse_dita_basemap() {
+    // Find the basemap.xsd file
+    let basemap = Dita12::files_by_extension("xsd")
+        .find(|f| f.path.ends_with("basemap.xsd"))
+        .expect("basemap.xsd should exist in DITA bundle");
+
+    let content = basemap.content_str().expect("Should be valid UTF-8");
+
+    // TODO: Once XSD parsing is implemented:
+    // let schema = XsdSchema::from_string(content).expect("Should parse DITA basemap");
+    // assert!(!schema.complex_types.is_empty());
+
+    // For now, just verify the content looks like an XSD
+    assert!(content.contains("xs:schema") || content.contains("xsd:schema"));
+    eprintln!("DITA basemap.xsd: {} bytes", content.len());
+}
+
+#[test]
+#[ignore = "Rust schema parser not yet implemented"]
+fn test_parse_niso_sts() {
+    // Find main NISO STS XSD file
+    let main_xsd = NisoSts::files_by_extension("xsd")
+        .find(|f| f.path.contains("NISO-STS") || f.path.contains("niso-sts"))
+        .or_else(|| NisoSts::files_by_extension("xsd").next());
+
+    if let Some(file) = main_xsd {
+        let content = file.content_str().expect("Should be valid UTF-8");
+
+        // TODO: Once XSD parsing is implemented:
+        // let schema = XsdSchema::from_string(content).expect("Should parse NISO STS");
+
+        assert!(content.contains("schema"));
+        eprintln!("NISO STS {}: {} bytes", file.path, content.len());
+    } else {
+        eprintln!("No XSD files found in NISO bundle - skipping");
+    }
+}
+
+#[test]
+fn test_list_dita_entry_points() {
+    // List potential entry point schemas in DITA
+    let entry_points: Vec<_> = Dita12::files_by_extension("xsd")
+        .filter(|f| {
+            let name = f.file_name().unwrap_or("");
+            name.contains("map") || name.contains("topic") || name.contains("concept")
+                || name.contains("task") || name.contains("reference")
+        })
+        .collect();
+
+    eprintln!("DITA entry point candidates:");
+    for file in &entry_points {
+        eprintln!("  - {}", file.path);
+    }
+
+    assert!(!entry_points.is_empty(), "Should find DITA entry point schemas");
 }

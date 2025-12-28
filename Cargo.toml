@@ -61,6 +61,12 @@ criterion = "0.5"  # Benchmarking
 pretty_assertions = "1.4"  # Better test failure messages
 tempfile = "3.8"  # Temporary files for tests
 
+# Schema bundles for integration tests
+schemas-core = { git = "https://github.com/ParapluOU/schemas-rs.git" }
+schemas-dita = { git = "https://github.com/ParapluOU/schemas-rs.git" }
+schemas-dita-lce = { git = "https://github.com/ParapluOU/schemas-rs.git" }
+schemas-niso-sts = { git = "https://github.com/ParapluOU/schemas-rs.git" }
+
 [features]
 default = []
 cli = ["dep:clap"]
