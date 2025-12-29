@@ -177,28 +177,62 @@ impl ModelVisitor {
     }
 
     /// Match an element by tag name
-    pub fn match_element(&self, tag: &str) -> Option<QName> {
-        self.current_element().and_then(|particle| {
-            match particle {
-                GroupParticle::Element(elem) => {
-                    if elem.name.local_name == tag {
-                        Some(elem.name.clone())
-                    } else {
-                        // Check for namespace match
-                        None
+    ///
+    /// If the current particle doesn't match but has satisfied its minOccurs,
+    /// this will advance past it to try subsequent particles.
+    pub fn match_element(&mut self, tag: &str) -> Option<QName> {
+        // Try to match at current position, advancing past satisfied particles if needed
+        loop {
+            if let Some(particle) = self.current_element() {
+                // Try to match current particle
+                let matched = match particle {
+                    GroupParticle::Element(elem) => {
+                        if elem.name.local_name == tag {
+                            Some(elem.name.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    GroupParticle::Any(any) => {
+                        if any.matches_tag(tag) {
+                            Some(QName::local(tag))
+                        } else {
+                            None
+                        }
+                    }
+                    GroupParticle::Group(_) => None,
+                };
+
+                if matched.is_some() {
+                    return matched;
+                }
+
+                // Current particle didn't match - check if we can skip it
+                // (i.e., its minOccurs has been satisfied)
+                if let Some(idx) = self.element_index {
+                    let occurs = self.get_occurs(idx);
+                    let can_skip = match particle {
+                        GroupParticle::Element(elem) => !elem.occurs.is_missing(occurs),
+                        GroupParticle::Any(any) => !any.occurs().is_missing(occurs),
+                        GroupParticle::Group(group) => !group.occurs.is_missing(occurs),
+                    };
+
+                    if can_skip {
+                        // Advance to next particle and try again
+                        self.position += 1;
+                        self.element_index = None;
+                        self.start();
+                        continue;
                     }
                 }
-                GroupParticle::Any(any) => {
-                    // Wildcard matching
-                    if any.matches_tag(tag) {
-                        Some(QName::local(tag))
-                    } else {
-                        None
-                    }
-                }
-                GroupParticle::Group(_) => None,
+
+                // Can't skip current particle - no match
+                return None;
+            } else {
+                // No current element (model ended)
+                return None;
             }
-        })
+        }
     }
 
     /// Advance the visitor, optionally with a match
@@ -622,7 +656,7 @@ mod tests {
         group.particles.push(make_element("a"));
         group.particles.push(make_element("b"));
 
-        let visitor = ModelVisitor::new(Arc::new(group));
+        let mut visitor = ModelVisitor::new(Arc::new(group));
 
         // Either a or b should match initially
         let matched_a = visitor.match_element("a").is_some();
