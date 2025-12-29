@@ -13,6 +13,7 @@ use std::sync::Arc;
 use crate::error::{ParseError, Result};
 use crate::namespaces::QName;
 
+use super::elements::XsdElement;
 use super::groups::{GroupParticle, XsdGroup};
 use super::particles::{OccursCounter, Particle};
 use super::wildcards::XsdAnyElement;
@@ -257,6 +258,36 @@ impl ModelVisitor {
         visitor.matched = self.matched;
 
         visitor.stop().is_empty()
+    }
+
+    /// Find an element declaration by QName in the content model
+    ///
+    /// Searches through all particles in the model (recursively into nested groups)
+    /// to find a local element declaration with the matching name.
+    pub fn find_element_decl(&self, qname: &QName) -> Option<Arc<XsdElement>> {
+        Self::find_element_in_group(&self.root, qname)
+    }
+
+    /// Recursively search for an element declaration in a group
+    fn find_element_in_group(group: &XsdGroup, qname: &QName) -> Option<Arc<XsdElement>> {
+        for particle in &group.particles {
+            match particle {
+                GroupParticle::Element(elem) => {
+                    if &elem.name == qname {
+                        if let Some(decl) = elem.element() {
+                            return Some(Arc::clone(decl));
+                        }
+                    }
+                }
+                GroupParticle::Group(nested) => {
+                    if let Some(decl) = Self::find_element_in_group(nested, qname) {
+                        return Some(decl);
+                    }
+                }
+                GroupParticle::Any(_) => {}
+            }
+        }
+        None
     }
 }
 

@@ -13,6 +13,7 @@ use super::base::{
 };
 use super::builtins::XsdValue;
 use super::simple_types::SimpleType;
+use super::wildcards::XsdAnyAttribute;
 
 /// Attribute use mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -108,7 +109,9 @@ pub struct XsdAttribute {
     /// Attribute name
     name: QName,
     /// Attribute type (must be a simple type)
-    attr_type: Option<Arc<dyn SimpleType>>,
+    attr_type: Option<Arc<dyn SimpleType + Send + Sync>>,
+    /// Type name reference (for forward reference resolution)
+    pub type_name: Option<QName>,
     /// Usage mode
     use_mode: AttributeUse,
     /// Form (qualified/unqualified)
@@ -133,6 +136,7 @@ impl XsdAttribute {
         Self {
             name,
             attr_type: None,
+            type_name: None,
             use_mode: AttributeUse::Optional,
             form: AttributeForm::Unqualified,
             default: None,
@@ -145,10 +149,11 @@ impl XsdAttribute {
     }
 
     /// Create an attribute with a type
-    pub fn with_type(name: QName, attr_type: Arc<dyn SimpleType>) -> Self {
+    pub fn with_type(name: QName, attr_type: Arc<dyn SimpleType + Send + Sync>) -> Self {
         Self {
             name,
             attr_type: Some(attr_type),
+            type_name: None,
             use_mode: AttributeUse::Optional,
             form: AttributeForm::Unqualified,
             default: None,
@@ -161,7 +166,7 @@ impl XsdAttribute {
     }
 
     /// Set the attribute type
-    pub fn set_type(&mut self, attr_type: Arc<dyn SimpleType>) {
+    pub fn set_type(&mut self, attr_type: Arc<dyn SimpleType + Send + Sync>) {
         self.attr_type = Some(attr_type);
     }
 
@@ -212,9 +217,19 @@ impl XsdAttribute {
         self.reference = Some(reference);
     }
 
+    /// Get the attribute name
+    pub fn name(&self) -> &QName {
+        &self.name
+    }
+
     /// Get the use mode
     pub fn use_mode(&self) -> AttributeUse {
         self.use_mode
+    }
+
+    /// Get the default value
+    pub fn default(&self) -> Option<&str> {
+        self.default.as_deref()
     }
 
     /// Get the form
@@ -243,7 +258,7 @@ impl XsdAttribute {
     }
 
     /// Get the simple type
-    pub fn simple_type(&self) -> Option<&dyn SimpleType> {
+    pub fn simple_type(&self) -> Option<&(dyn SimpleType + Send + Sync)> {
         self.attr_type.as_ref().map(|t| t.as_ref())
     }
 
@@ -384,6 +399,10 @@ pub struct XsdAttributeGroup {
     attributes: HashMap<QName, Arc<XsdAttribute>>,
     /// Attribute groups referenced by this group
     attribute_groups: Vec<Arc<XsdAttributeGroup>>,
+    /// Pending attribute group references (QNames to be resolved in build phase)
+    pending_group_refs: Vec<QName>,
+    /// Optional any attribute wildcard
+    any_attribute: Option<Arc<XsdAnyAttribute>>,
     /// Build errors
     errors: Vec<ParseError>,
     /// Whether fully built
@@ -397,6 +416,8 @@ impl XsdAttributeGroup {
             name: Some(name),
             attributes: HashMap::new(),
             attribute_groups: Vec::new(),
+            pending_group_refs: Vec::new(),
+            any_attribute: None,
             errors: Vec::new(),
             built: false,
         }
@@ -408,6 +429,8 @@ impl XsdAttributeGroup {
             name: None,
             attributes: HashMap::new(),
             attribute_groups: Vec::new(),
+            pending_group_refs: Vec::new(),
+            any_attribute: None,
             errors: Vec::new(),
             built: false,
         }
@@ -431,9 +454,52 @@ impl XsdAttributeGroup {
         Ok(())
     }
 
+    /// Set (update or add) an attribute
+    ///
+    /// Unlike `add_attribute`, this will replace an existing attribute with the same name.
+    pub fn set_attribute(&mut self, attr: Arc<XsdAttribute>) {
+        let name = attr.name.clone();
+        self.attributes.insert(name, attr);
+    }
+
     /// Add a reference to another attribute group
     pub fn add_group_ref(&mut self, group: Arc<XsdAttributeGroup>) {
         self.attribute_groups.push(group);
+    }
+
+    /// Add a pending attribute group reference (to be resolved in build phase)
+    pub fn add_pending_group_ref(&mut self, qname: QName) {
+        self.pending_group_refs.push(qname);
+    }
+
+    /// Get pending attribute group references
+    pub fn pending_group_refs(&self) -> &[QName] {
+        &self.pending_group_refs
+    }
+
+    /// Check if there are pending references
+    pub fn has_pending_refs(&self) -> bool {
+        !self.pending_group_refs.is_empty()
+    }
+
+    /// Clear pending references (after resolution)
+    pub fn clear_pending_refs(&mut self) {
+        self.pending_group_refs.clear();
+    }
+
+    /// Set the any attribute wildcard
+    pub fn set_any_attribute(&mut self, any: Arc<XsdAnyAttribute>) {
+        self.any_attribute = Some(any);
+    }
+
+    /// Get the any attribute wildcard
+    pub fn any_attribute(&self) -> Option<&Arc<XsdAnyAttribute>> {
+        self.any_attribute.as_ref()
+    }
+
+    /// Check if this group has an any attribute wildcard
+    pub fn has_any_attribute(&self) -> bool {
+        self.any_attribute.is_some()
     }
 
     /// Get an attribute by name

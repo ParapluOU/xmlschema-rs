@@ -11,6 +11,7 @@ use crate::error::ParseError;
 use crate::namespaces::QName;
 use std::sync::Arc;
 
+use super::elements::XsdElement;
 use super::particles::{Occurs, OccursCalculator, Particle};
 use super::wildcards::XsdAnyElement;
 
@@ -106,6 +107,8 @@ pub struct ElementParticle {
     pub occurs: Occurs,
     /// Reference to the actual element declaration (if available)
     pub element_ref: Option<QName>,
+    /// Actual element declaration for local elements
+    pub element_decl: Option<Arc<XsdElement>>,
 }
 
 impl ElementParticle {
@@ -115,6 +118,7 @@ impl ElementParticle {
             name,
             occurs,
             element_ref: None,
+            element_decl: None,
         }
     }
 
@@ -124,7 +128,23 @@ impl ElementParticle {
             name,
             occurs,
             element_ref: Some(element_ref),
+            element_decl: None,
         }
+    }
+
+    /// Create with local element declaration
+    pub fn with_decl(name: QName, occurs: Occurs, element_decl: Arc<XsdElement>) -> Self {
+        Self {
+            name,
+            occurs,
+            element_ref: None,
+            element_decl: Some(element_decl),
+        }
+    }
+
+    /// Get the element declaration if available
+    pub fn element(&self) -> Option<&Arc<XsdElement>> {
+        self.element_decl.as_ref()
     }
 }
 

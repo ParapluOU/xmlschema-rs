@@ -391,11 +391,187 @@ impl MaxInclusiveFacet {
     }
 }
 
+/// Minimum exclusive bound facet
+#[derive(Debug, Clone)]
+pub struct MinExclusiveFacet {
+    /// Minimum value (exclusive - value must be > than this)
+    pub value: NumericBound,
+}
+
+impl MinExclusiveFacet {
+    /// Create a new minimum exclusive facet
+    pub fn new_int(value: i64) -> Self {
+        Self {
+            value: NumericBound::Integer(value),
+        }
+    }
+
+    /// Create a new minimum exclusive facet with a decimal value
+    pub fn new_decimal(value: Decimal) -> Self {
+        Self {
+            value: NumericBound::Decimal(value),
+        }
+    }
+
+    /// Validate an integer value
+    pub fn validate_int(&self, value: i64) -> Result<()> {
+        use std::cmp::Ordering;
+        // Value must be strictly greater than bound
+        // compare_int returns: Less if value < bound, Equal if ==, Greater if value > bound
+        match self.value.compare_int(value) {
+            Ordering::Greater => Ok(()), // value > bound is valid
+            Ordering::Equal | Ordering::Less => Err(crate::error::Error::Validation(
+                ValidationError::new(format!("Value must be > {}", self.value))
+                    .with_reason(format!("Value: {}", value)),
+            )),
+        }
+    }
+
+    /// Validate a decimal value
+    pub fn validate_decimal(&self, value: &Decimal) -> Result<()> {
+        use std::cmp::Ordering;
+        match self.value.compare_decimal(value) {
+            Ordering::Greater => Ok(()), // value > bound is valid
+            Ordering::Equal | Ordering::Less => Err(crate::error::Error::Validation(
+                ValidationError::new(format!("Value must be > {}", self.value))
+                    .with_reason(format!("Value: {}", value)),
+            )),
+        }
+    }
+}
+
+/// Maximum exclusive bound facet
+#[derive(Debug, Clone)]
+pub struct MaxExclusiveFacet {
+    /// Maximum value (exclusive - value must be < than this)
+    pub value: NumericBound,
+}
+
+impl MaxExclusiveFacet {
+    /// Create a new maximum exclusive facet
+    pub fn new_int(value: i64) -> Self {
+        Self {
+            value: NumericBound::Integer(value),
+        }
+    }
+
+    /// Create a new maximum exclusive facet with a decimal value
+    pub fn new_decimal(value: Decimal) -> Self {
+        Self {
+            value: NumericBound::Decimal(value),
+        }
+    }
+
+    /// Validate an integer value
+    pub fn validate_int(&self, value: i64) -> Result<()> {
+        use std::cmp::Ordering;
+        // Value must be strictly less than bound
+        // compare_int returns: Less if value < bound, Equal if ==, Greater if value > bound
+        match self.value.compare_int(value) {
+            Ordering::Less => Ok(()), // value < bound is valid
+            Ordering::Equal | Ordering::Greater => Err(crate::error::Error::Validation(
+                ValidationError::new(format!("Value must be < {}", self.value))
+                    .with_reason(format!("Value: {}", value)),
+            )),
+        }
+    }
+
+    /// Validate a decimal value
+    pub fn validate_decimal(&self, value: &Decimal) -> Result<()> {
+        use std::cmp::Ordering;
+        match self.value.compare_decimal(value) {
+            Ordering::Less => Ok(()), // value < bound is valid
+            Ordering::Equal | Ordering::Greater => Err(crate::error::Error::Validation(
+                ValidationError::new(format!("Value must be < {}", self.value))
+                    .with_reason(format!("Value: {}", value)),
+            )),
+        }
+    }
+}
+
+/// Total digits facet - constrains the maximum number of decimal digits
+#[derive(Debug, Clone)]
+pub struct TotalDigitsFacet {
+    /// Maximum total number of digits allowed
+    pub value: u32,
+}
+
+impl TotalDigitsFacet {
+    /// Create a new total digits facet
+    pub fn new(value: u32) -> Self {
+        Self { value }
+    }
+
+    /// Validate an integer value
+    pub fn validate_int(&self, value: i64) -> Result<()> {
+        let abs_value = value.abs();
+        let digits = if abs_value == 0 {
+            1
+        } else {
+            ((abs_value as f64).log10().floor() as u32) + 1
+        };
+
+        if digits > self.value {
+            Err(crate::error::Error::Validation(
+                ValidationError::new(format!("Value exceeds totalDigits limit of {}", self.value))
+                    .with_reason(format!("Value {} has {} digits", value, digits)),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Validate a decimal value
+    pub fn validate_decimal(&self, value: &Decimal) -> Result<()> {
+        // For decimals, count all significant digits (before and after decimal point)
+        // Normalize to remove trailing zeros and get the actual significant digits
+        let normalized = value.normalize();
+        let s = normalized.to_string();
+        let digit_count: u32 = s
+            .chars()
+            .filter(|c| c.is_ascii_digit())
+            .count() as u32;
+
+        if digit_count > self.value {
+            Err(crate::error::Error::Validation(
+                ValidationError::new(format!("Value exceeds totalDigits limit of {}", self.value))
+                    .with_reason(format!("Value {} has {} significant digits", value, digit_count)),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Fraction digits facet - constrains the maximum number of decimal places
+#[derive(Debug, Clone)]
+pub struct FractionDigitsFacet {
+    /// Maximum number of fractional digits allowed
+    pub value: u32,
+}
+
+impl FractionDigitsFacet {
+    /// Create a new fraction digits facet
+    pub fn new(value: u32) -> Self {
+        Self { value }
+    }
+
+    /// Validate a decimal value
+    pub fn validate_decimal(&self, value: &Decimal) -> Result<()> {
+        let scale = value.scale();
+
+        if scale > self.value {
+            Err(crate::error::Error::Validation(
+                ValidationError::new(format!("Value exceeds fractionDigits limit of {}", self.value))
+                    .with_reason(format!("Value {} has {} fractional digits", value, scale)),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 // TODO: Implement more facets:
-// - MinExclusiveFacet
-// - MaxExclusiveFacet
-// - TotalDigitsFacet
-// - FractionDigitsFacet
 // - AssertionFacet (XSD 1.1)
 
 #[cfg(test)]
@@ -506,5 +682,50 @@ mod tests {
 
         assert_eq!(dec_bound.compare_decimal(&Decimal::new(105, 1)), std::cmp::Ordering::Equal);
         assert_eq!(dec_bound.compare_decimal(&Decimal::new(110, 1)), std::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn test_min_exclusive_facet() {
+        let facet = MinExclusiveFacet::new_int(10);
+
+        assert!(facet.validate_int(11).is_ok());
+        assert!(facet.validate_int(100).is_ok());
+        assert!(facet.validate_int(10).is_err()); // Equal is not allowed
+        assert!(facet.validate_int(9).is_err());
+    }
+
+    #[test]
+    fn test_max_exclusive_facet() {
+        let facet = MaxExclusiveFacet::new_int(100);
+
+        assert!(facet.validate_int(99).is_ok());
+        assert!(facet.validate_int(0).is_ok());
+        assert!(facet.validate_int(100).is_err()); // Equal is not allowed
+        assert!(facet.validate_int(101).is_err());
+    }
+
+    #[test]
+    fn test_total_digits_facet() {
+        let facet = TotalDigitsFacet::new(5);
+
+        assert!(facet.validate_int(12345).is_ok());
+        assert!(facet.validate_int(1234).is_ok());
+        assert!(facet.validate_int(123456).is_err());
+        assert!(facet.validate_int(0).is_ok());
+        assert!(facet.validate_int(-12345).is_ok());
+
+        // Decimal tests
+        assert!(facet.validate_decimal(&Decimal::new(12345, 0)).is_ok()); // 12345
+        assert!(facet.validate_decimal(&Decimal::new(1234, 1)).is_ok());  // 123.4 (4 digits)
+        assert!(facet.validate_decimal(&Decimal::new(123456, 0)).is_err()); // 123456 (6 digits)
+    }
+
+    #[test]
+    fn test_fraction_digits_facet() {
+        let facet = FractionDigitsFacet::new(2);
+
+        assert!(facet.validate_decimal(&Decimal::new(123, 2)).is_ok());   // 1.23
+        assert!(facet.validate_decimal(&Decimal::new(12, 1)).is_ok());    // 1.2
+        assert!(facet.validate_decimal(&Decimal::new(1234, 3)).is_err()); // 1.234 (3 fraction digits)
     }
 }

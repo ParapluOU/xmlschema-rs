@@ -93,6 +93,11 @@ impl NamespaceContext {
         self.default_namespace.as_deref()
     }
 
+    /// Iterate over all prefix-namespace pairs
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.prefixes.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
     /// Resolve a prefixed name to a QName
     pub fn resolve(&self, prefixed_name: &str) -> Result<QName> {
         if let Some((prefix, local)) = prefixed_name.split_once(':') {

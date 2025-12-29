@@ -144,6 +144,9 @@ pub struct XsdElement {
     /// Reference to another element (for ref= usage)
     pub ref_element: Option<QName>,
 
+    /// Type name reference (for type= attribute, resolved during build phase)
+    pub type_name: Option<QName>,
+
     /// Target namespace
     pub target_namespace: Option<String>,
 
@@ -171,6 +174,7 @@ impl XsdElement {
             final_deriv: DerivationFlags::default(),
             scope: ElementScope::default(),
             ref_element: None,
+            type_name: None,
             target_namespace: None,
             qualified: false,
             errors: Vec::new(),
@@ -208,6 +212,7 @@ impl XsdElement {
             final_deriv: DerivationFlags::default(),
             scope: ElementScope::Local,
             ref_element: Some(ref_name),
+            type_name: None,
             target_namespace: None,
             qualified: false,
             errors: Vec::new(),
@@ -449,6 +454,7 @@ pub struct XsdElementBuilder {
     final_deriv: DerivationFlags,
     scope: ElementScope,
     ref_element: Option<QName>,
+    type_name: Option<QName>,
     target_namespace: Option<String>,
     qualified: bool,
 }
@@ -470,6 +476,7 @@ impl XsdElementBuilder {
             final_deriv: DerivationFlags::default(),
             scope: ElementScope::default(),
             ref_element: None,
+            type_name: None,
             target_namespace: None,
             qualified: false,
         }
@@ -590,6 +597,7 @@ impl XsdElementBuilder {
             final_deriv: self.final_deriv,
             scope: self.scope,
             ref_element: self.ref_element,
+            type_name: self.type_name,
             target_namespace: self.target_namespace,
             qualified: self.qualified,
             errors: Vec::new(),

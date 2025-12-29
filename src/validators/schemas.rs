@@ -7,21 +7,25 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 
 use super::attributes::{XsdAttribute, XsdAttributeGroup};
-use super::base::{ValidationMode, ValidationStatus, ValidityStatus, Validator};
+use super::base::{ValidationMode, ValidationStatus, Validator};
 use super::builders::{XsdBuilders, XsdVersion};
+use super::document_validation::validate_document;
 use super::elements::XsdElement;
+use super::exceptions::XsdValidatorError;
 use super::globals::{XsdGlobals, XsdNotation};
 use super::groups::XsdGroup;
 use super::simple_types::SimpleType;
+use super::validation::ValidationContext;
 
+use crate::documents::Document;
 use crate::error::{ParseError, Result};
 use crate::namespaces::QName;
 
 // Re-export from builtins for local use
-use super::builtins::XSD_NAMESPACE;
 use super::globals::GlobalType;
 
 /// XML namespace
@@ -298,33 +302,129 @@ impl XsdSchema {
     }
 
     /// Look up a global type by QName
+    ///
+    /// First searches local types, then searches in imported schemas.
     pub fn lookup_type(&self, qname: &QName) -> Option<&GlobalType> {
-        self.maps.lookup_type(qname)
+        // First check local types
+        if let Some(typ) = self.maps.lookup_type(qname) {
+            return Some(typ);
+        }
+
+        // Check imports if the namespace matches an imported schema
+        if let Some(ref ns) = qname.namespace {
+            if let Some(import) = self.imports.get(ns) {
+                if let Some(ref imported_schema) = import.schema {
+                    return imported_schema.maps.lookup_type(qname);
+                }
+            }
+        }
+
+        None
     }
 
     /// Look up a simple type by QName
+    ///
+    /// First searches local types, then searches in imported schemas.
     pub fn lookup_simple_type(&self, qname: &QName) -> Option<&Arc<dyn SimpleType + Send + Sync>> {
-        self.maps.lookup_simple_type(qname)
+        // First check local types
+        if let Some(typ) = self.maps.lookup_simple_type(qname) {
+            return Some(typ);
+        }
+
+        // Check imports if the namespace matches an imported schema
+        if let Some(ref ns) = qname.namespace {
+            if let Some(import) = self.imports.get(ns) {
+                if let Some(ref imported_schema) = import.schema {
+                    return imported_schema.maps.lookup_simple_type(qname);
+                }
+            }
+        }
+
+        None
     }
 
     /// Look up a global element by QName
+    ///
+    /// First searches local elements, then searches in imported schemas.
     pub fn lookup_element(&self, qname: &QName) -> Option<&Arc<XsdElement>> {
-        self.maps.lookup_element(qname)
+        // First check local elements
+        if let Some(elem) = self.maps.lookup_element(qname) {
+            return Some(elem);
+        }
+
+        // Check imports if the namespace matches an imported schema
+        if let Some(ref ns) = qname.namespace {
+            if let Some(import) = self.imports.get(ns) {
+                if let Some(ref imported_schema) = import.schema {
+                    return imported_schema.maps.lookup_element(qname);
+                }
+            }
+        }
+
+        None
     }
 
     /// Look up a global attribute by QName
+    ///
+    /// First searches local attributes, then searches in imported schemas.
     pub fn lookup_attribute(&self, qname: &QName) -> Option<&Arc<XsdAttribute>> {
-        self.maps.lookup_attribute(qname)
+        // First check local attributes
+        if let Some(attr) = self.maps.lookup_attribute(qname) {
+            return Some(attr);
+        }
+
+        // Check imports if the namespace matches an imported schema
+        if let Some(ref ns) = qname.namespace {
+            if let Some(import) = self.imports.get(ns) {
+                if let Some(ref imported_schema) = import.schema {
+                    return imported_schema.maps.lookup_attribute(qname);
+                }
+            }
+        }
+
+        None
     }
 
     /// Look up a global group by QName
+    ///
+    /// First searches local groups, then searches in imported schemas.
     pub fn lookup_group(&self, qname: &QName) -> Option<&Arc<XsdGroup>> {
-        self.maps.lookup_group(qname)
+        // First check local groups
+        if let Some(group) = self.maps.lookup_group(qname) {
+            return Some(group);
+        }
+
+        // Check imports if the namespace matches an imported schema
+        if let Some(ref ns) = qname.namespace {
+            if let Some(import) = self.imports.get(ns) {
+                if let Some(ref imported_schema) = import.schema {
+                    return imported_schema.maps.lookup_group(qname);
+                }
+            }
+        }
+
+        None
     }
 
     /// Look up an attribute group by QName
+    ///
+    /// First searches local attribute groups, then searches in imported schemas.
     pub fn lookup_attribute_group(&self, qname: &QName) -> Option<&Arc<XsdAttributeGroup>> {
-        self.maps.lookup_attribute_group(qname)
+        // First check local attribute groups
+        if let Some(group) = self.maps.lookup_attribute_group(qname) {
+            return Some(group);
+        }
+
+        // Check imports if the namespace matches an imported schema
+        if let Some(ref ns) = qname.namespace {
+            if let Some(import) = self.imports.get(ns) {
+                if let Some(ref imported_schema) = import.schema {
+                    return imported_schema.maps.lookup_attribute_group(qname);
+                }
+            }
+        }
+
+        None
     }
 
     /// Look up a notation by QName
@@ -445,6 +545,617 @@ impl XsdSchema {
             schema: None,
         });
     }
+
+    // =========================================================================
+    // Document Validation API
+    // =========================================================================
+
+    /// Validate an XML document against this schema
+    ///
+    /// Returns a ValidationResult containing validation status and any errors.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let schema = XsdSchema::parse_file("schema.xsd")?;
+    /// let doc = Document::from_string("<root>...</root>")?;
+    /// let result = schema.validate(&doc);
+    /// if !result.valid {
+    ///     for error in &result.errors {
+    ///         eprintln!("Validation error: {}", error);
+    ///     }
+    /// }
+    /// ```
+    pub fn validate(&self, doc: &Document) -> ValidationResult {
+        self.validate_with_mode(doc, self.validation)
+    }
+
+    /// Validate an XML document with a specific validation mode
+    pub fn validate_with_mode(&self, doc: &Document, mode: ValidationMode) -> ValidationResult {
+        let mut context = ValidationContext::new().with_mode(mode);
+
+        match validate_document(self, doc, &mut context) {
+            Ok(()) => {
+                if context.has_errors() {
+                    ValidationResult::invalid(
+                        context.errors.iter().map(|e| e.message().to_string()).collect(),
+                    )
+                } else {
+                    ValidationResult::valid()
+                }
+            }
+            Err(e) => {
+                let mut errors: Vec<String> = context.errors.iter().map(|e| e.message().to_string()).collect();
+                errors.push(e.to_string());
+                ValidationResult::invalid(errors)
+            }
+        }
+    }
+
+    /// Check if an XML document is valid against this schema
+    ///
+    /// This is a convenience method that returns a boolean.
+    /// Use `validate()` if you need detailed error information.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let schema = XsdSchema::parse_file("schema.xsd")?;
+    /// let doc = Document::from_string("<root>...</root>")?;
+    /// if schema.is_valid(&doc) {
+    ///     println!("Document is valid!");
+    /// }
+    /// ```
+    pub fn is_valid(&self, doc: &Document) -> bool {
+        self.validate(doc).valid
+    }
+
+    /// Validate an XML string against this schema
+    ///
+    /// Parses the XML string and validates it.
+    pub fn validate_string(&self, xml: &str) -> ValidationResult {
+        match Document::from_string(xml) {
+            Ok(doc) => self.validate(&doc),
+            Err(e) => ValidationResult::invalid(vec![format!("Failed to parse XML: {}", e)]),
+        }
+    }
+
+    /// Check if an XML string is valid against this schema
+    pub fn is_valid_string(&self, xml: &str) -> bool {
+        self.validate_string(xml).valid
+    }
+
+    /// Validate an XML file against this schema
+    ///
+    /// Reads and parses the file, then validates it.
+    pub fn validate_file(&self, path: &Path) -> ValidationResult {
+        match std::fs::read_to_string(path) {
+            Ok(content) => self.validate_string(&content),
+            Err(e) => ValidationResult::invalid(vec![format!(
+                "Failed to read file '{}': {}",
+                path.display(),
+                e
+            )]),
+        }
+    }
+
+    /// Check if an XML file is valid against this schema
+    pub fn is_valid_file(&self, path: &Path) -> bool {
+        self.validate_file(path).valid
+    }
+
+    /// Get all validation errors for an XML document
+    ///
+    /// This always runs in lax mode to collect all errors.
+    pub fn iter_errors(&self, doc: &Document) -> Vec<String> {
+        let result = self.validate_with_mode(doc, ValidationMode::Lax);
+        result.errors
+    }
+
+    /// Resolve type references in global elements
+    ///
+    /// This is called during the build phase to resolve forward type references.
+    fn resolve_element_types(&mut self) {
+        use super::elements::ElementType;
+
+        // Collect elements that need type resolution
+        let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
+            .filter_map(|(qname, elem)| {
+                // Check if element has a type_name that needs resolution
+                if let Some(ref type_name) = elem.type_name {
+                    // Only resolve if current type is Any (unresolved)
+                    if matches!(elem.element_type, ElementType::Any) {
+                        if let Some(global_type) = self.maps.global_maps.types.get(type_name) {
+                            let resolved_type = match global_type {
+                                GlobalType::Complex(ct) => ElementType::Complex(Arc::clone(ct)),
+                                GlobalType::Simple(st) => ElementType::Simple(Arc::clone(st)),
+                            };
+                            return Some((qname.clone(), elem.as_ref().clone(), resolved_type));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Update elements with resolved types
+        for (qname, mut elem, resolved_type) in elements_to_update {
+            elem.element_type = resolved_type;
+            self.maps.global_maps.elements.insert(qname, Arc::new(elem));
+        }
+    }
+
+    /// Resolve element types in complex type content models
+    ///
+    /// This handles forward references where a local element references a type
+    /// that's defined later in the schema.
+    fn resolve_element_particle_types(&mut self) {
+        use super::complex_types::ComplexContent;
+        use super::elements::ElementType;
+        use super::groups::{ElementParticle, GroupParticle, XsdGroup};
+
+        // Collect complex types that need element type resolution
+        let types_to_update: Vec<_> = self.maps.global_maps.types.iter()
+            .filter_map(|(qname, global_type)| {
+                if let GlobalType::Complex(ct) = global_type {
+                    if let ComplexContent::Group(group) = &ct.content {
+                        if Self::has_unresolved_element_types(group) {
+                            return Some((qname.clone(), Arc::clone(ct)));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Resolve element types in each complex type
+        for (qname, ct) in types_to_update {
+            if let ComplexContent::Group(group) = &ct.content {
+                if let Some(resolved_group) = self.resolve_element_types_in_group(group) {
+                    let mut new_ct = (*ct).clone();
+                    new_ct.content = ComplexContent::Group(Arc::new(resolved_group));
+                    self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
+                }
+            }
+        }
+    }
+
+    /// Check if a group has any unresolved element types
+    fn has_unresolved_element_types(group: &super::groups::XsdGroup) -> bool {
+        use super::elements::ElementType;
+        use super::groups::GroupParticle;
+
+        for particle in &group.particles {
+            match particle {
+                GroupParticle::Element(ep) => {
+                    if let Some(elem) = ep.element() {
+                        if matches!(elem.element_type, ElementType::Any) && elem.type_name.is_some() {
+                            return true;
+                        }
+                    }
+                }
+                GroupParticle::Group(nested) => {
+                    if Self::has_unresolved_element_types(nested) {
+                        return true;
+                    }
+                }
+                GroupParticle::Any(_) => {}
+            }
+        }
+        false
+    }
+
+    /// Resolve element types in a group recursively
+    fn resolve_element_types_in_group(&self, group: &super::groups::XsdGroup) -> Option<super::groups::XsdGroup> {
+        use super::elements::ElementType;
+        use super::groups::{ElementParticle, GroupParticle, XsdGroup};
+
+        let mut new_particles = Vec::new();
+        let mut changed = false;
+
+        for particle in &group.particles {
+            match particle {
+                GroupParticle::Element(ep) => {
+                    if let Some(elem) = ep.element() {
+                        if matches!(elem.element_type, ElementType::Any) {
+                            // Try to resolve the type
+                            if let Some(ref type_name) = elem.type_name {
+                                if let Some(global_type) = self.maps.global_maps.types.get(type_name) {
+                                    let resolved_type = match global_type {
+                                        GlobalType::Complex(ct) => ElementType::Complex(Arc::clone(ct)),
+                                        GlobalType::Simple(st) => ElementType::Simple(Arc::clone(st)),
+                                    };
+                                    // Create updated element with resolved type
+                                    // elem is Arc<XsdElement>, we need to clone the inner value
+                                    let mut new_elem = elem.as_ref().clone();
+                                    new_elem.element_type = resolved_type;
+                                    let new_particle = ElementParticle::with_decl(
+                                        ep.name.clone(),
+                                        ep.occurs,
+                                        Arc::new(new_elem),
+                                    );
+                                    new_particles.push(GroupParticle::Element(Arc::new(new_particle)));
+                                    changed = true;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                    new_particles.push(particle.clone());
+                }
+                GroupParticle::Group(nested) => {
+                    if let Some(resolved_nested) = self.resolve_element_types_in_group(nested) {
+                        new_particles.push(GroupParticle::Group(Arc::new(resolved_nested)));
+                        changed = true;
+                    } else {
+                        new_particles.push(particle.clone());
+                    }
+                }
+                GroupParticle::Any(_) => {
+                    new_particles.push(particle.clone());
+                }
+            }
+        }
+
+        if changed {
+            // Create a new group with the same model and resolved particles
+            let mut new_group = if let Some(ref name) = group.name {
+                XsdGroup::named(name.clone(), group.model)
+            } else {
+                XsdGroup::new(group.model)
+            };
+            new_group.particles = new_particles;
+            Some(new_group)
+        } else {
+            None
+        }
+    }
+
+    /// Resolve attribute types in complex types (forward references)
+    ///
+    /// This handles cases where attributes reference simple types that are defined
+    /// later in the schema.
+    fn resolve_attribute_types(&mut self) {
+        use super::attributes::XsdAttribute;
+        use super::base::AttributeValidator;
+
+        // Collect complex types that have unresolved attribute types
+        let types_to_update: Vec<_> = self.maps.global_maps.types.iter()
+            .filter_map(|(qname, global_type)| {
+                if let GlobalType::Complex(ct) = global_type {
+                    // Check if any attribute has an unresolved type_name
+                    let has_unresolved = ct.attributes.iter_attributes()
+                        .any(|attr| attr.type_name.is_some() && attr.simple_type().is_none());
+                    if has_unresolved {
+                        return Some((qname.clone(), Arc::clone(ct)));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Resolve attribute types
+        for (qname, ct) in types_to_update {
+            let mut new_ct = (*ct).clone();
+
+            // Collect attributes to update (to avoid borrow issues)
+            let attrs_to_update: Vec<_> = new_ct.attributes.iter_attributes()
+                .filter_map(|attr| {
+                    if let Some(ref type_name) = attr.type_name {
+                        if attr.simple_type().is_none() {
+                            if let Some(global_type) = self.maps.global_maps.types.get(type_name) {
+                                if let GlobalType::Simple(st) = global_type {
+                                    // Create updated attribute with resolved type
+                                    let mut new_attr = XsdAttribute::new(attr.name().clone());
+                                    new_attr.set_type(Arc::clone(st));
+                                    new_attr.set_use(attr.use_mode());
+                                    if let Some(default) = attr.default() {
+                                        let _ = new_attr.set_default(default.to_string());
+                                    }
+                                    if let Some(fixed) = attr.fixed_value() {
+                                        let _ = new_attr.set_fixed(fixed.to_string());
+                                    }
+                                    return Some(Arc::new(new_attr));
+                                }
+                            }
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            // Apply updates
+            if !attrs_to_update.is_empty() {
+                for new_attr in attrs_to_update {
+                    new_ct.attributes.set_attribute(new_attr);
+                }
+                self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
+            }
+        }
+    }
+
+    /// Refresh global element types with the fully resolved versions
+    ///
+    /// After all type resolution is complete, update global elements that reference
+    /// named complex types to use the fully resolved type from global_maps.types.
+    /// This ensures element's inline type copies have the resolved attributes and children.
+    fn refresh_element_types(&mut self) {
+        use super::elements::ElementType;
+
+        // Collect elements that need their type refreshed
+        let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
+            .filter_map(|(elem_qname, elem)| {
+                if let ElementType::Complex(ct) = &elem.element_type {
+                    // If the complex type has a name, look up the fresh version
+                    if let Some(ref type_name) = ct.name {
+                        if let Some(GlobalType::Complex(fresh_ct)) = self.maps.global_maps.types.get(type_name) {
+                            let mut new_elem = (**elem).clone();
+                            new_elem.element_type = ElementType::Complex(Arc::clone(fresh_ct));
+                            return Some((elem_qname.clone(), Arc::new(new_elem)));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Apply updates
+        for (qname, new_elem) in elements_to_update {
+            self.maps.global_maps.elements.insert(qname, new_elem);
+        }
+    }
+
+    /// Resolve group references (xs:group ref="...")
+    ///
+    /// This walks through all complex types and resolves group references to their actual content.
+    fn resolve_group_references(&mut self) {
+        use super::complex_types::ComplexContent;
+        use super::groups::GroupParticle;
+
+        // Collect complex types that need group reference resolution
+        let types_to_update: Vec<_> = self.maps.global_maps.types.iter()
+            .filter_map(|(qname, global_type)| {
+                if let GlobalType::Complex(ct) = global_type {
+                    if let ComplexContent::Group(group) = &ct.content {
+                        if Self::has_group_refs(group) {
+                            return Some((qname.clone(), Arc::clone(ct)));
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Resolve group references in each type
+        for (qname, ct) in types_to_update {
+            if let ComplexContent::Group(group) = &ct.content {
+                if let Some(resolved_group) = self.resolve_group_ref_recursive(group) {
+                    let mut new_ct = (*ct).clone();
+                    new_ct.content = ComplexContent::Group(Arc::new(resolved_group));
+                    self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
+                }
+            }
+        }
+    }
+
+    /// Check if a group or its children contain group references
+    fn has_group_refs(group: &super::groups::XsdGroup) -> bool {
+        use super::groups::GroupParticle;
+
+        if group.group_ref.is_some() {
+            return true;
+        }
+        for particle in &group.particles {
+            if let GroupParticle::Group(nested) = particle {
+                if Self::has_group_refs(nested) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Recursively resolve group references in a group
+    fn resolve_group_ref_recursive(&self, group: &super::groups::XsdGroup) -> Option<super::groups::XsdGroup> {
+        use super::groups::{GroupParticle, XsdGroup};
+
+        // If this group is a reference, resolve it
+        if let Some(ref ref_name) = group.group_ref {
+            if let Some(referenced_group) = self.maps.global_maps.groups.get(ref_name) {
+                // Create a new group with the referenced group's content
+                // Dereference twice: &Arc<XsdGroup> -> Arc<XsdGroup> -> XsdGroup
+                let mut resolved = (**referenced_group).clone();
+                resolved.occurs = group.occurs;
+                resolved.group_ref = None;
+                // Recursively resolve any nested references
+                if let Some(nested_resolved) = self.resolve_group_ref_recursive(&resolved) {
+                    return Some(nested_resolved);
+                }
+                return Some(resolved);
+            }
+            // Reference not found - return None
+            return None;
+        }
+
+        // Not a reference - resolve any nested group references
+        let mut modified = false;
+        let mut new_particles = Vec::new();
+
+        for particle in &group.particles {
+            match particle {
+                GroupParticle::Group(nested) => {
+                    if let Some(resolved_nested) = self.resolve_group_ref_recursive(nested) {
+                        new_particles.push(GroupParticle::Group(Arc::new(resolved_nested)));
+                        modified = true;
+                    } else {
+                        new_particles.push(particle.clone());
+                    }
+                }
+                _ => new_particles.push(particle.clone()),
+            }
+        }
+
+        if modified {
+            let mut new_group = group.clone();
+            new_group.particles = new_particles;
+            Some(new_group)
+        } else {
+            None
+        }
+    }
+
+    /// Resolve complex type derivations (extension/restriction)
+    ///
+    /// This is called during the build phase to merge base type content with derived types.
+    fn resolve_complex_type_derivations(&mut self) {
+        use super::complex_types::{ComplexContent, DerivationMethod};
+        use super::groups::{GroupParticle, ModelType, XsdGroup};
+
+        // Collect types that need derivation resolution
+        let types_to_update: Vec<_> = self.maps.global_maps.types.iter()
+            .filter_map(|(qname, global_type)| {
+                if let GlobalType::Complex(ct) = global_type {
+                    if let Some(ref base_type_name) = ct.base_type {
+                        if let Some(derivation) = ct.derivation {
+                            // Look up base type
+                            if let Some(GlobalType::Complex(base_ct)) = self.maps.global_maps.types.get(base_type_name) {
+                                return Some((qname.clone(), Arc::clone(ct), Arc::clone(base_ct), derivation));
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Resolve each derived type
+        for (qname, derived_ct, base_ct, derivation) in types_to_update {
+            let mut new_ct = (*derived_ct).clone();
+
+            match derivation {
+                DerivationMethod::Extension => {
+                    // For extension: create a sequence containing base content + extension content
+                    if let (ComplexContent::Group(base_group), ComplexContent::Group(ext_group)) =
+                        (&base_ct.content, &derived_ct.content)
+                    {
+                        // If base type is empty, just use extension's content
+                        if base_group.is_empty() {
+                            // Extension content stays as-is
+                        } else if ext_group.is_empty() {
+                            // No new content, just inherit base
+                            new_ct.content = ComplexContent::Group(Arc::clone(base_group));
+                        } else {
+                            // Both have content - create wrapper sequence
+                            let mut wrapper = XsdGroup::new(ModelType::Sequence);
+                            wrapper.particles.push(GroupParticle::Group(Arc::clone(base_group)));
+                            wrapper.particles.push(GroupParticle::Group(Arc::clone(ext_group)));
+                            new_ct.content = ComplexContent::Group(Arc::new(wrapper));
+                        }
+                    }
+
+                    // Inherit mixed from base if not explicitly set
+                    if !new_ct.mixed && base_ct.mixed {
+                        new_ct.mixed = base_ct.mixed;
+                    }
+
+                    // Inherit attributes from base type
+                    for attr in base_ct.attributes.iter_attributes() {
+                        // Only add if not already defined (extension can override)
+                        if new_ct.attributes.get_attribute(attr.name()).is_none() {
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                        }
+                    }
+                }
+                DerivationMethod::Restriction => {
+                    // For restriction: the derived content model already replaces base
+                    // If derived content is empty, inherit from base
+                    if let ComplexContent::Group(ref ext_group) = new_ct.content {
+                        if ext_group.is_empty() {
+                            if let ComplexContent::Group(base_group) = &base_ct.content {
+                                new_ct.content = ComplexContent::Group(Arc::clone(base_group));
+                            }
+                        }
+                    }
+
+                    // Inherit mixed from base if not explicitly set
+                    if !new_ct.mixed {
+                        new_ct.mixed = base_ct.mixed;
+                    }
+
+                    // For restriction, inherit base attributes (derived type can narrow them)
+                    for attr in base_ct.attributes.iter_attributes() {
+                        if new_ct.attributes.get_attribute(attr.name()).is_none() {
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                        }
+                    }
+                }
+            }
+
+            // Update the type in the global map
+            self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
+        }
+    }
+
+    /// Resolve attribute group references
+    ///
+    /// This resolves pending attribute group references in:
+    /// 1. Global attribute groups that reference other attribute groups
+    /// 2. Complex types whose attribute groups reference other attribute groups
+    fn resolve_attribute_group_references(&mut self) {
+        use super::attributes::XsdAttributeGroup;
+
+        // First, resolve references in global attribute groups
+        let groups_to_update: Vec<_> = self.maps.global_maps.attribute_groups.iter()
+            .filter_map(|(qname, group)| {
+                if group.has_pending_refs() {
+                    Some((qname.clone(), (**group).clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for (qname, mut group) in groups_to_update {
+            for ref_qname in group.pending_group_refs().to_vec() {
+                if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
+                    // Add the referenced attributes to this group
+                    for attr in referenced_group.iter_attributes() {
+                        let _ = group.add_attribute(Arc::clone(attr));
+                    }
+                }
+            }
+            group.clear_pending_refs();
+            self.maps.global_maps.attribute_groups.insert(qname, Arc::new(group));
+        }
+
+        // Then, resolve references in complex types' attribute groups
+        let types_to_update: Vec<_> = self.maps.global_maps.types.iter()
+            .filter_map(|(qname, global_type)| {
+                if let GlobalType::Complex(ct) = global_type {
+                    if ct.attributes.has_pending_refs() {
+                        return Some((qname.clone(), Arc::clone(ct)));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for (qname, ct) in types_to_update {
+            let mut new_ct = (*ct).clone();
+
+            for ref_qname in new_ct.attributes.pending_group_refs().to_vec() {
+                if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
+                    // Add the referenced attributes to this complex type
+                    for attr in referenced_group.iter_attributes() {
+                        let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                    }
+                }
+            }
+            new_ct.attributes.clear_pending_refs();
+
+            self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
+        }
+    }
 }
 
 impl Validator for XsdSchema {
@@ -461,6 +1172,27 @@ impl Validator for XsdSchema {
         if self.maps.global_maps.types.is_empty() {
             self.register_builtins()?;
         }
+
+        // Resolve complex type derivations (extension/restriction)
+        self.resolve_complex_type_derivations();
+
+        // Resolve group references in complex types
+        self.resolve_group_references();
+
+        // Resolve attribute group references
+        self.resolve_attribute_group_references();
+
+        // Resolve type references in global elements
+        self.resolve_element_types();
+
+        // Resolve element types in complex type content models (forward references)
+        self.resolve_element_particle_types();
+
+        // Resolve attribute types in complex types (forward references)
+        self.resolve_attribute_types();
+
+        // Refresh global element types with the fully resolved versions from global_maps.types
+        self.refresh_element_types();
 
         // Mark as built
         self.built = true;
@@ -630,6 +1362,8 @@ impl SchemaCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::base::ValidityStatus;
+    use super::super::builtins::XSD_NAMESPACE;
 
     #[test]
     fn test_schema_creation() {

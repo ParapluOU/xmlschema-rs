@@ -10,10 +10,11 @@
 use crate::error::{Error, ParseError, Result, ValidationError};
 use crate::namespaces::QName;
 use crate::validators::base::{TypeValidator, ValidationStatus, Validator};
-use crate::validators::builtins::{get_builtin_type, validate_builtin, BuiltinType, XsdValue};
+use crate::validators::builtins::{get_builtin_type, validate_builtin, BuiltinType, XsdValue, XSD_NAMESPACE};
 use crate::validators::facets::{
-    EnumerationFacet, LengthFacet, MaxInclusiveFacet, MaxLengthFacet, MinInclusiveFacet,
-    MinLengthFacet, PatternFacet, WhiteSpace,
+    EnumerationFacet, FractionDigitsFacet, LengthFacet, MaxExclusiveFacet, MaxInclusiveFacet,
+    MaxLengthFacet, MinExclusiveFacet, MinInclusiveFacet, MinLengthFacet, PatternFacet,
+    TotalDigitsFacet, WhiteSpace,
 };
 use std::sync::Arc;
 
@@ -55,7 +56,14 @@ pub struct FacetSet {
     pub min_inclusive: Option<MinInclusiveFacet>,
     /// Maximum inclusive facet
     pub max_inclusive: Option<MaxInclusiveFacet>,
-    // TODO: Add more facets: minExclusive, maxExclusive, totalDigits, fractionDigits
+    /// Minimum exclusive facet
+    pub min_exclusive: Option<MinExclusiveFacet>,
+    /// Maximum exclusive facet
+    pub max_exclusive: Option<MaxExclusiveFacet>,
+    /// Total digits facet
+    pub total_digits: Option<TotalDigitsFacet>,
+    /// Fraction digits facet
+    pub fraction_digits: Option<FractionDigitsFacet>,
 }
 
 impl FacetSet {
@@ -132,6 +140,12 @@ pub trait SimpleType: TypeValidator {
             .white_space
             .unwrap_or(WhiteSpace::Preserve)
     }
+
+    /// Get the qualified name as a string in {namespace}localName format
+    ///
+    /// For named types, returns the formatted name.
+    /// For builtin types, returns the XSD namespace qualified name.
+    fn qualified_name_string(&self) -> Option<String>;
 }
 
 // =============================================================================
@@ -280,6 +294,23 @@ impl SimpleType for XsdAtomicType {
 
         // Then validate against the built-in type
         validate_builtin(&self.builtin_name, value)
+    }
+
+    fn qualified_name_string(&self) -> Option<String> {
+        if let Some(ref name) = self.name {
+            Some(format_qname(name))
+        } else {
+            // Builtin type - use XSD namespace
+            Some(format!("{{{}}}{}", XSD_NAMESPACE, self.builtin_name))
+        }
+    }
+}
+
+/// Format a QName as {namespace}localName
+fn format_qname(qname: &QName) -> String {
+    match &qname.namespace {
+        Some(ns) => format!("{{{}}}{}", ns, qname.local_name),
+        None => qname.local_name.clone(),
     }
 }
 
@@ -459,6 +490,10 @@ impl SimpleType for XsdListType {
         // Return as string representation (list doesn't have a special XsdValue variant)
         Ok(XsdValue::String(normalized))
     }
+
+    fn qualified_name_string(&self) -> Option<String> {
+        self.name.as_ref().map(format_qname)
+    }
 }
 
 // =============================================================================
@@ -605,6 +640,10 @@ impl SimpleType for XsdUnionType {
                 )),
         ))
     }
+
+    fn qualified_name_string(&self) -> Option<String> {
+        self.name.as_ref().map(format_qname)
+    }
 }
 
 // =============================================================================
@@ -747,6 +786,10 @@ impl SimpleType for XsdRestrictedType {
 
         // Then delegate to the base type
         self.base_type_ref.validate_value(value)
+    }
+
+    fn qualified_name_string(&self) -> Option<String> {
+        self.name.as_ref().map(format_qname)
     }
 }
 

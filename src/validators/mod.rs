@@ -33,6 +33,12 @@ pub mod exceptions;      // Validation exceptions ✅
 // Wave 9: XML validation
 pub mod validation;      // Validation context and traits ✅
 
+// Wave 10: XSD Document Parsing
+pub mod parsing;         // XSD document parser ✅
+
+// Wave 11: Document Validation
+pub mod document_validation;  // XML document validation ✅
+
 // Re-exports
 pub use base::{
     AttributeValidator, ElementValidator, TypeValidator, ValidationMode, ValidationStatus,
@@ -124,6 +130,7 @@ pub use validation::{
     DecimalTypePreference, DecodeContext, EncodeContext, ValidationContext,
     ValidationOutcome, XmlDecoder, XmlEncoder, XmlValidator,
 };
+pub use document_validation::validate_document;
 
 /// Type alias for backward compatibility
 pub type Schema = XsdSchema;

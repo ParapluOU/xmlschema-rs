@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://example.com/test"
+           xmlns:tns="http://example.com/test"
+           elementFormDefault="qualified">
+    
+    <xs:include schemaLocation="types.xsd"/>
+    
+    <xs:element name="root" type="tns:personType"/>
+</xs:schema>
