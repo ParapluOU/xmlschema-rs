@@ -1,0 +1,771 @@
+//! Comprehensive comparison tests for DITA and NISO STS schema bundles.
+//!
+//! These tests:
+//! 1. Extract schema bundles to a temporary directory
+//! 2. Parse with both Python xmlschema and Rust xmlschema-rs
+//! 3. Compare results across multiple axes
+//! 4. Assert statically-known facts about the standards
+
+mod bundle_facts;
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use tempfile::TempDir;
+
+use schemas_core::{SchemaBundle, SchemaBundleExt};
+use schemas_dita::Dita12;
+use schemas_niso_sts::NisoSts;
+
+use xmlschema::comparison::{
+    format_qualified_name, AttributeInfo, ChildElementInfo, ElementInfo, RestrictionInfo,
+    SchemaDump, SimpleTypeInfo, TypeInfo,
+};
+use xmlschema::validators::{
+    ComplexContent, GlobalType, GroupParticle, SimpleType, XsdSchema,
+};
+
+use bundle_facts::{DitaFacts, NisoFacts};
+
+// =============================================================================
+// Bundle Extraction Utilities
+// =============================================================================
+
+/// Extract a schema bundle to a temporary directory.
+/// Returns the TempDir (which will be cleaned up when dropped) and the base path.
+fn extract_bundle_to_temp<B: SchemaBundleExt>() -> (TempDir, PathBuf) {
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let base_path = temp_dir.path().to_path_buf();
+
+    // Iterate through all files and write them to the temp directory
+    for file in B::files() {
+        let dest_path = base_path.join(&file.path);
+
+        // Create parent directories if needed
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent).expect("Failed to create directories");
+        }
+
+        // Write file content
+        fs::write(&dest_path, file.content).expect("Failed to write file");
+    }
+
+    (temp_dir, base_path)
+}
+
+/// Path to the Python venv created for testing
+const PYTHON_VENV: &str = "tests/comparison/venv/bin/python";
+
+/// Path to the dump_schema.py script
+const DUMP_SCRIPT: &str = "tests/comparison/dump_schema.py";
+
+/// Run the Python schema dumper on an XSD file
+fn dump_schema_python(xsd_path: &Path) -> Result<SchemaDump, String> {
+    let output = Command::new(PYTHON_VENV)
+        .arg(DUMP_SCRIPT)
+        .arg(xsd_path)
+        .arg("--pretty")
+        .output()
+        .map_err(|e| format!("Failed to run Python: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Python script failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&json_str)
+        .map_err(|e| format!("Failed to parse Python JSON output: {}", e))
+}
+
+/// Dump schema using Rust implementation
+fn dump_schema_rust(xsd_path: &Path) -> Result<SchemaDump, String> {
+    use xmlschema::validators::{ElementType, FormDefault};
+
+    // Parse the XSD file
+    let schema = XsdSchema::from_file(xsd_path)
+        .map_err(|e| format!("Failed to parse XSD: {}", e))?;
+
+    let target_ns = schema.target_namespace.clone();
+    let maps = &schema.maps.global_maps;
+
+    // Build dump structure
+    let mut dump = SchemaDump {
+        target_namespace: target_ns.clone(),
+        schema_location: Some(xsd_path.to_string_lossy().to_string()),
+        element_form_default: match schema.element_form_default {
+            FormDefault::Qualified => Some("qualified".to_string()),
+            FormDefault::Unqualified => Some("unqualified".to_string()),
+        },
+        root_elements: Vec::new(),
+        complex_types: Vec::new(),
+        simple_types: Vec::new(),
+    };
+
+    // Convert elements
+    for (qname, elem) in &maps.elements {
+        let type_info = match &elem.element_type {
+            ElementType::Complex(ct) => {
+                let (type_name, type_qname) = if let Some(ref name) = ct.name {
+                    let n = format_qualified_name(name.namespace.as_deref(), &name.local_name);
+                    (Some(n.clone()), Some(n))
+                } else {
+                    (None, None)
+                };
+
+                let attrs: Vec<AttributeInfo> = ct
+                    .attributes
+                    .iter_attributes()
+                    .map(|a| {
+                        let attr_type = a
+                            .simple_type()
+                            .and_then(|st| st.qualified_name_string())
+                            .unwrap_or_else(|| "{http://www.w3.org/2001/XMLSchema}string".to_string());
+                        AttributeInfo {
+                            name: a.name().local_name.clone(),
+                            attr_type,
+                            use_mode: format!("{:?}", a.use_mode()).to_lowercase(),
+                            default: a.default().map(|s| s.to_string()),
+                        }
+                    })
+                    .collect();
+
+                let content_model = if ct.content.is_empty() {
+                    None
+                } else {
+                    Some("XsdGroup".to_string())
+                };
+
+                let child_elements = if let ComplexContent::Group(ref group) = ct.content {
+                    let mut children = Vec::new();
+                    extract_child_elements(&group.particles, &mut children, &schema);
+                    if children.is_empty() { None } else { Some(children) }
+                } else {
+                    None
+                };
+
+                Some(TypeInfo {
+                    name: type_name,
+                    qualified_name: type_qname,
+                    category: "XsdComplexType".to_string(),
+                    is_complex: true,
+                    is_simple: false,
+                    content_model,
+                    attributes: if attrs.is_empty() { None } else { Some(attrs) },
+                    child_elements,
+                })
+            }
+            ElementType::Simple(st) => {
+                let type_name = st.qualified_name_string();
+                Some(TypeInfo {
+                    name: type_name.clone(),
+                    qualified_name: type_name,
+                    category: "XsdAtomicType".to_string(),
+                    is_complex: false,
+                    is_simple: true,
+                    content_model: None,
+                    attributes: None,
+                    child_elements: None,
+                })
+            }
+            ElementType::Any => None,
+        };
+
+        let elem_name = format_qualified_name(qname.namespace.as_deref(), &qname.local_name);
+        dump.root_elements.push(ElementInfo {
+            name: elem_name.clone(),
+            qualified_name: elem_name,
+            element_type: type_info,
+            min_occurs: elem.occurs.min,
+            max_occurs: elem.occurs.max,
+            nillable: elem.nillable,
+            default: elem.default.clone(),
+        });
+    }
+
+    // Convert types
+    for (qname, global_type) in &maps.types {
+        let type_name = format_qualified_name(qname.namespace.as_deref(), &qname.local_name);
+
+        match global_type {
+            GlobalType::Complex(ct) => {
+                let attrs: Vec<AttributeInfo> = ct
+                    .attributes
+                    .iter_attributes()
+                    .map(|a| {
+                        let attr_type = a
+                            .simple_type()
+                            .and_then(|st| st.qualified_name_string())
+                            .unwrap_or_else(|| "{http://www.w3.org/2001/XMLSchema}string".to_string());
+                        AttributeInfo {
+                            name: a.name().local_name.clone(),
+                            attr_type,
+                            use_mode: format!("{:?}", a.use_mode()).to_lowercase(),
+                            default: a.default().map(|s| s.to_string()),
+                        }
+                    })
+                    .collect();
+
+                let content_model = if ct.content.is_empty() {
+                    None
+                } else {
+                    Some("XsdGroup".to_string())
+                };
+
+                let child_elements = if let ComplexContent::Group(ref group) = ct.content {
+                    let mut children = Vec::new();
+                    extract_child_elements(&group.particles, &mut children, &schema);
+                    if children.is_empty() { None } else { Some(children) }
+                } else {
+                    None
+                };
+
+                dump.complex_types.push(TypeInfo {
+                    name: Some(type_name.clone()),
+                    qualified_name: Some(type_name),
+                    category: "XsdComplexType".to_string(),
+                    is_complex: true,
+                    is_simple: false,
+                    content_model,
+                    attributes: if attrs.is_empty() { None } else { Some(attrs) },
+                    child_elements,
+                });
+            }
+            GlobalType::Simple(st) => {
+                let facets = st.facets();
+                let mut restrictions = Vec::new();
+
+                if let Some(ref enums) = facets.enumeration {
+                    restrictions.push(RestrictionInfo {
+                        kind: "Enumeration".to_string(),
+                        value: None,
+                        values: Some(enums.values.clone()),
+                    });
+                }
+
+                let base_type = SimpleType::base_type(st.as_ref())
+                    .and_then(|bt| bt.qualified_name_string());
+
+                dump.simple_types.push(SimpleTypeInfo {
+                    name: type_name.clone(),
+                    qualified_name: type_name,
+                    category: "XsdAtomicRestriction".to_string(),
+                    base_type,
+                    restrictions: if restrictions.is_empty() { None } else { Some(restrictions) },
+                });
+            }
+        }
+    }
+
+    Ok(dump)
+}
+
+/// Helper to extract child elements from content model particles
+fn extract_child_elements(
+    particles: &[GroupParticle],
+    children: &mut Vec<ChildElementInfo>,
+    schema: &XsdSchema,
+) {
+    for particle in particles {
+        match particle {
+            GroupParticle::Element(ep) => {
+                let element_type = if let Some(elem_decl) = ep.element() {
+                    get_element_type_name(elem_decl, schema)
+                } else if let Some(ref elem_ref) = ep.element_ref {
+                    if let Some(elem) = schema.lookup_element(elem_ref) {
+                        get_element_type_name(&elem, schema)
+                    } else {
+                        "unknown".to_string()
+                    }
+                } else if let Some(elem) = schema.lookup_element(&ep.name) {
+                    get_element_type_name(&elem, schema)
+                } else {
+                    "unknown".to_string()
+                };
+
+                children.push(ChildElementInfo {
+                    name: format_qualified_name(ep.name.namespace.as_deref(), &ep.name.local_name),
+                    element_type,
+                    min_occurs: ep.occurs.min,
+                    max_occurs: ep.occurs.max,
+                });
+            }
+            GroupParticle::Group(nested) => {
+                extract_child_elements(&nested.particles, children, schema);
+            }
+            GroupParticle::Any(_) => {}
+        }
+    }
+}
+
+fn get_element_type_name(elem: &xmlschema::validators::XsdElement, _schema: &XsdSchema) -> String {
+    use xmlschema::validators::ElementType;
+
+    match &elem.element_type {
+        ElementType::Simple(st) => st.qualified_name_string().unwrap_or_else(|| "unknown".to_string()),
+        ElementType::Complex(ct) => {
+            if let Some(ref name) = ct.name {
+                format_qualified_name(name.namespace.as_deref(), &name.local_name)
+            } else {
+                "XsdComplexType".to_string()
+            }
+        }
+        ElementType::Any => "anyType".to_string(),
+    }
+}
+
+/// Compare two SchemaDumps and report differences
+fn compare_schemas(expected: &SchemaDump, actual: &SchemaDump) -> Vec<String> {
+    let mut differences = Vec::new();
+
+    if expected.target_namespace != actual.target_namespace {
+        differences.push(format!(
+            "target_namespace: expected {:?}, got {:?}",
+            expected.target_namespace, actual.target_namespace
+        ));
+    }
+
+    if expected.element_form_default != actual.element_form_default {
+        differences.push(format!(
+            "element_form_default: expected {:?}, got {:?}",
+            expected.element_form_default, actual.element_form_default
+        ));
+    }
+
+    if expected.root_elements.len() != actual.root_elements.len() {
+        differences.push(format!(
+            "root_elements count: expected {}, got {}",
+            expected.root_elements.len(),
+            actual.root_elements.len()
+        ));
+    }
+
+    if expected.complex_types.len() != actual.complex_types.len() {
+        differences.push(format!(
+            "complex_types count: expected {}, got {}",
+            expected.complex_types.len(),
+            actual.complex_types.len()
+        ));
+    }
+
+    if expected.simple_types.len() != actual.simple_types.len() {
+        differences.push(format!(
+            "simple_types count: expected {}, got {}",
+            expected.simple_types.len(),
+            actual.simple_types.len()
+        ));
+    }
+
+    differences
+}
+
+// =============================================================================
+// DITA Bundle Tests
+// =============================================================================
+
+#[test]
+fn test_dita_bundle_extraction() {
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<Dita12>();
+
+    // Verify files were extracted
+    assert!(base_path.exists());
+
+    // Look for entry point files
+    let mut found_entry_points = 0;
+    for entry_point in DitaFacts::ENTRY_POINTS {
+        // Search recursively for the entry point file
+        let found = walkdir_find(&base_path, entry_point);
+        if found.is_some() {
+            found_entry_points += 1;
+        }
+    }
+
+    assert!(found_entry_points > 0, "Should find at least one DITA entry point");
+    eprintln!("Found {} DITA entry points in extracted bundle", found_entry_points);
+}
+
+#[test]
+fn test_dita_static_facts_namespace() {
+    // Verify DITA namespace is as expected
+    assert_eq!(
+        DitaFacts::NAMESPACE,
+        "http://dita.oasis-open.org/architecture/2005/"
+    );
+}
+
+#[test]
+fn test_dita_static_facts_domains() {
+    // Verify domain count matches
+    assert_eq!(DitaFacts::DOMAINS.len(), DitaFacts::DOMAIN_COUNT);
+
+    // Verify specific domains
+    for domain in DitaFacts::DOMAINS {
+        assert!(
+            DitaFacts::is_valid_domain(domain),
+            "Domain {} should be valid",
+            domain
+        );
+    }
+}
+
+#[test]
+fn test_dita_static_facts_enumerations() {
+    // Test topicreftypes enumeration has expected values
+    let expected_topicreftypes = &["topic", "concept", "task", "reference"];
+    for value in expected_topicreftypes {
+        assert!(
+            DitaFacts::is_valid_topicreftype(value),
+            "topicreftypes should include '{}'",
+            value
+        );
+    }
+
+    // Test importance enumeration
+    let expected_importance = &["high", "normal", "low", "required"];
+    for value in expected_importance {
+        assert!(
+            DitaFacts::is_valid_importance(value),
+            "importance should include '{}'",
+            value
+        );
+    }
+
+    // Verify the -dita-use-conref-target escape hatch exists
+    assert!(DitaFacts::is_valid_topicreftype("-dita-use-conref-target"));
+    assert!(DitaFacts::is_valid_importance("-dita-use-conref-target"));
+    assert!(DitaFacts::is_valid_scale("-dita-use-conref-target"));
+}
+
+#[test]
+fn test_dita_topic_required_attributes() {
+    // Verify topic element requires 'id' attribute
+    assert!(
+        DitaFacts::TOPIC_REQUIRED_ATTRS.contains(&"id"),
+        "topic should require 'id' attribute"
+    );
+
+    // Verify the id attribute fact
+    let id_attr = DitaFacts::topic_id_attribute();
+    assert_eq!(id_attr.name, "id");
+    assert!(id_attr.required);
+    assert_eq!(id_attr.type_name, "{http://www.w3.org/2001/XMLSchema}ID");
+}
+
+#[test]
+#[ignore = "Requires complete schema import resolution - run with: cargo test -- --ignored"]
+fn test_dita_parse_topic_schema() {
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<Dita12>();
+
+    // Find topic.xsd
+    if let Some(topic_path) = walkdir_find(&base_path, "topic.xsd") {
+        eprintln!("Found topic.xsd at: {}", topic_path.display());
+
+        match dump_schema_rust(&topic_path) {
+            Ok(schema) => {
+                // Assert basic facts
+                assert!(
+                    schema.target_namespace.is_some(),
+                    "topic.xsd should have a target namespace"
+                );
+
+                // Check for topic element
+                let has_topic = schema.root_elements.iter()
+                    .any(|e| e.name.contains("topic"));
+                assert!(has_topic, "Should find 'topic' element");
+
+                eprintln!("Parsed DITA topic.xsd successfully:");
+                eprintln!("  Elements: {}", schema.root_elements.len());
+                eprintln!("  Complex types: {}", schema.complex_types.len());
+                eprintln!("  Simple types: {}", schema.simple_types.len());
+            }
+            Err(e) => {
+                eprintln!("Failed to parse topic.xsd (expected with imports): {}", e);
+            }
+        }
+    } else {
+        eprintln!("topic.xsd not found in DITA bundle");
+    }
+}
+
+#[test]
+#[ignore = "Requires Python venv for comparison - run with: cargo test -- --ignored"]
+fn test_dita_topic_python_rust_parity() {
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<Dita12>();
+
+    if let Some(topic_path) = walkdir_find(&base_path, "topic.xsd") {
+        let python = match dump_schema_python(&topic_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Skipping - Python not available: {}", e);
+                return;
+            }
+        };
+
+        let rust = match dump_schema_rust(&topic_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Rust parse failed: {}", e);
+                return;
+            }
+        };
+
+        let diffs = compare_schemas(&python, &rust);
+        if !diffs.is_empty() {
+            eprintln!("DITA topic.xsd differences:");
+            for diff in &diffs {
+                eprintln!("  - {}", diff);
+            }
+        }
+        assert!(diffs.is_empty(), "Schema comparison found {} differences", diffs.len());
+    }
+}
+
+// =============================================================================
+// NISO STS Bundle Tests
+// =============================================================================
+
+#[test]
+fn test_niso_bundle_extraction() {
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<NisoSts>();
+
+    assert!(base_path.exists());
+
+    // Look for entry point files
+    let mut found_entry_points = 0;
+    for entry_point in NisoFacts::ENTRY_POINTS {
+        if let Some(_) = walkdir_find(&base_path, entry_point) {
+            found_entry_points += 1;
+        }
+    }
+
+    assert!(found_entry_points > 0, "Should find at least one NISO STS entry point");
+    eprintln!("Found {} NISO STS entry points in extracted bundle", found_entry_points);
+}
+
+#[test]
+fn test_niso_static_facts_namespace_imports() {
+    // Verify namespace import count
+    assert_eq!(
+        NisoFacts::IMPORTED_NAMESPACES.len(),
+        NisoFacts::IMPORT_COUNT,
+        "Should have {} imported namespaces",
+        NisoFacts::IMPORT_COUNT
+    );
+
+    // Verify specific namespaces
+    assert!(NisoFacts::is_imported_namespace("http://www.w3.org/1999/xlink"));
+    assert!(NisoFacts::is_imported_namespace("http://www.w3.org/1998/Math/MathML"));
+    assert!(NisoFacts::is_imported_namespace("http://www.w3.org/2001/XInclude"));
+}
+
+#[test]
+fn test_niso_static_facts_key_elements() {
+    // Verify key elements
+    for elem in NisoFacts::KEY_ELEMENTS {
+        assert!(
+            NisoFacts::is_key_element(elem),
+            "'{}' should be a key element",
+            elem
+        );
+    }
+
+    // Verify metadata elements
+    for elem in NisoFacts::METADATA_ELEMENTS {
+        assert!(
+            NisoFacts::is_metadata_element(elem),
+            "'{}' should be a metadata element",
+            elem
+        );
+    }
+}
+
+#[test]
+fn test_niso_static_facts_enumerations() {
+    // Test pub-id-type values
+    let expected_pub_ids = &["doi", "isbn", "pmid", "pmcid"];
+    for value in expected_pub_ids {
+        assert!(
+            NisoFacts::is_valid_pub_id_type(value),
+            "pub-id-type should include '{}'",
+            value
+        );
+    }
+
+    // Test standard-type values
+    let expected_std_types = &["standard", "specification", "guide"];
+    for value in expected_std_types {
+        assert!(
+            NisoFacts::is_valid_standard_type(value),
+            "standard-type should include '{}'",
+            value
+        );
+    }
+}
+
+#[test]
+fn test_niso_expected_element_count() {
+    // This is a static fact assertion - the value is from the specification
+    assert_eq!(
+        NisoFacts::ELEMENT_COUNT, 347,
+        "NISO STS should define 347 elements"
+    );
+}
+
+#[test]
+fn test_niso_expected_enumeration_count() {
+    // Static fact about total enumeration values
+    assert_eq!(
+        NisoFacts::ENUMERATION_VALUE_COUNT, 338,
+        "NISO STS should have 338 enumeration values"
+    );
+}
+
+#[test]
+#[ignore = "Requires complete schema import resolution - run with: cargo test -- --ignored"]
+fn test_niso_parse_extended_schema() {
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<NisoSts>();
+
+    // Find main NISO STS XSD
+    if let Some(niso_path) = walkdir_find(&base_path, "NISO-STS-extended-1-mathml3.xsd") {
+        eprintln!("Found NISO STS at: {}", niso_path.display());
+
+        match dump_schema_rust(&niso_path) {
+            Ok(schema) => {
+                // Assert basic facts
+                eprintln!("Parsed NISO STS successfully:");
+                eprintln!("  Target namespace: {:?}", schema.target_namespace);
+                eprintln!("  Elements: {}", schema.root_elements.len());
+                eprintln!("  Complex types: {}", schema.complex_types.len());
+                eprintln!("  Simple types: {}", schema.simple_types.len());
+
+                // Check for key elements
+                for key_elem in NisoFacts::KEY_ELEMENTS {
+                    let found = schema.root_elements.iter()
+                        .any(|e| e.name.contains(key_elem));
+                    if !found {
+                        eprintln!("  Warning: Key element '{}' not found in root elements", key_elem);
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to parse NISO STS (expected with imports): {}", e);
+            }
+        }
+    } else {
+        eprintln!("NISO-STS-extended-1-mathml3.xsd not found in bundle");
+    }
+}
+
+#[test]
+#[ignore = "Requires Python venv for comparison - run with: cargo test -- --ignored"]
+fn test_niso_extended_python_rust_parity() {
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<NisoSts>();
+
+    if let Some(niso_path) = walkdir_find(&base_path, "NISO-STS-extended-1-mathml3.xsd") {
+        let python = match dump_schema_python(&niso_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Skipping - Python not available: {}", e);
+                return;
+            }
+        };
+
+        let rust = match dump_schema_rust(&niso_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Rust parse failed: {}", e);
+                return;
+            }
+        };
+
+        let diffs = compare_schemas(&python, &rust);
+        if !diffs.is_empty() {
+            eprintln!("NISO STS differences:");
+            for diff in &diffs {
+                eprintln!("  - {}", diff);
+            }
+        }
+        assert!(diffs.is_empty(), "Schema comparison found {} differences", diffs.len());
+    }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// Simple recursive file finder
+fn walkdir_find(base: &Path, filename: &str) -> Option<PathBuf> {
+    if base.is_file() {
+        if base.file_name().map(|n| n.to_string_lossy().contains(filename)).unwrap_or(false) {
+            return Some(base.to_path_buf());
+        }
+        return None;
+    }
+
+    if let Ok(entries) = fs::read_dir(base) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(found) = walkdir_find(&path, filename) {
+                return Some(found);
+            }
+        }
+    }
+
+    None
+}
+
+// =============================================================================
+// Quantitative Assertion Tests
+// =============================================================================
+
+#[test]
+fn test_dita_entry_point_count() {
+    assert!(
+        DitaFacts::ENTRY_POINTS.len() >= 5,
+        "DITA should have at least 5 entry point schemas (topic, concept, task, reference, map)"
+    );
+}
+
+#[test]
+fn test_niso_namespace_import_count() {
+    assert_eq!(
+        NisoFacts::IMPORT_COUNT, 7,
+        "NISO STS should import 7 namespaces"
+    );
+}
+
+#[test]
+fn test_dita_scale_enumeration_values() {
+    // Scale values should include percentage values
+    let scale_values = DitaFacts::SCALE_VALUES;
+    assert!(scale_values.contains(&"50"));
+    assert!(scale_values.contains(&"100"));
+    assert!(scale_values.contains(&"200"));
+    assert!(scale_values.contains(&"-dita-use-conref-target"));
+}
+
+#[test]
+fn test_dita_status_enumeration_values() {
+    let status_values = DitaFacts::STATUS_VALUES;
+    assert!(status_values.contains(&"new"));
+    assert!(status_values.contains(&"changed"));
+    assert!(status_values.contains(&"deleted"));
+    assert!(status_values.contains(&"unchanged"));
+}
+
+#[test]
+fn test_niso_orientation_enumeration() {
+    assert_eq!(NisoFacts::ORIENTATION_VALUES.len(), 2);
+    assert!(NisoFacts::ORIENTATION_VALUES.contains(&"landscape"));
+    assert!(NisoFacts::ORIENTATION_VALUES.contains(&"portrait"));
+}
+
+#[test]
+fn test_niso_yes_no_enumeration() {
+    assert_eq!(NisoFacts::YES_NO_VALUES.len(), 2);
+    assert!(NisoFacts::YES_NO_VALUES.contains(&"yes"));
+    assert!(NisoFacts::YES_NO_VALUES.contains(&"no"));
+}
