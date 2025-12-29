@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<book xmlns="http://example.com/book" isbn="978-0-13-468599-1">
+    <title>The Rust Programming Language</title>
+    <author>
+        <firstName>Steve</firstName>
+        <lastName>Klabnik</lastName>
+    </author>
+</book>
