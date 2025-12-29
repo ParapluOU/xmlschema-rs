@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- This document has an invalid ISBN format -->
+<book xmlns="http://example.com/book" isbn="invalid-isbn-format">
+    <title>Test Book</title>
+    <author>
+        <firstName>John</firstName>
+        <lastName>Doe</lastName>
+    </author>
+</book>

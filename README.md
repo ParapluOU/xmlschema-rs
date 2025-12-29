@@ -74,21 +74,22 @@ use xmlschema::validators::XsdSchema;
 use xmlschema::documents::Document;
 
 let schema = XsdSchema::from_file("schema.xsd")?;
-let doc = Document::from_file("document.xml")?;
+let xml_content = std::fs::read_to_string("document.xml")?;
+let doc = Document::from_string(&xml_content)?;
 
-// Validate
-match schema.validate(&doc) {
-    Ok(()) => println!("Valid!"),
-    Err(errors) => {
-        for error in errors {
-            eprintln!("Validation error: {}", error);
-        }
-    }
-}
-
-// Or check validity
+// Quick validity check
 if schema.is_valid(&doc) {
     println!("Document is valid");
+}
+
+// Detailed validation with errors
+let result = schema.validate(&doc);
+if result.valid {
+    println!("Valid!");
+} else {
+    for error in &result.errors {
+        eprintln!("Validation error: {}", error);
+    }
 }
 ```
 
@@ -105,6 +106,108 @@ let json = parker.decode(&element_data)?;
 let badgerfish = BadgerFishConverter::new();
 let json = badgerfish.decode(&element_data)?;
 ```
+
+## Examples
+
+The `examples/` directory contains runnable demonstrations of the library's features.
+
+### Validation Example
+
+Demonstrates validating XML documents against an XSD schema:
+
+```bash
+cargo run --example validate
+```
+
+Output:
+```
+Loading schema: examples/data/book.xsd
+Schema loaded successfully!
+
+Validating: examples/data/book_valid.xml
+  Result: Document is valid!
+
+Validating: examples/data/book_invalid.xml
+  Result: Document is invalid!
+
+Detailed validation of invalid document:
+  - validation error: Invalid value for attribute 'isbn': invalid-isbn-format
+```
+
+### Schema Inspection Example
+
+Demonstrates parsing and inspecting an XSD schema structure:
+
+```bash
+cargo run --example inspect_schema
+```
+
+Output:
+```
+=== Schema Inspection Example ===
+
+Loading: examples/data/book.xsd
+
+--- Schema Metadata ---
+Target Namespace: Some("http://example.com/book")
+Element Form Default: qualified
+
+--- Component Counts ---
+Global Elements: 1
+Global Types: 4
+Model Groups: 0
+
+--- Global Elements ---
+  - book
+
+--- Global Types ---
+  - isbnType (simple)
+  - bookType (complex)
+  - personType (complex)
+  - emailType (simple)
+```
+
+### XML to JSON Conversion Example
+
+Demonstrates converting XML to JSON using different conventions:
+
+```bash
+cargo run --example xml_to_json
+```
+
+Output (truncated):
+```
+=== XML to JSON Conversion Example ===
+
+--- Default Convention ---
+{
+  "book": {
+    "@isbn": "978-0-13-468599-1",
+    "author": [
+      { "email": "steve@example.com", "firstName": "Steve", "lastName": "Klabnik" },
+      { "firstName": "Carol", "lastName": "Nichols" }
+    ],
+    "pages": "552",
+    "title": "The Rust Programming Language"
+  }
+}
+
+--- Parker Convention ---
+(Simple element-to-value mapping, attributes may be lost)
+...
+
+--- BadgerFish Convention ---
+(Preserves attributes with @ prefix, text with $ key)
+...
+```
+
+### Example Data Files
+
+The `examples/data/` directory contains sample files:
+
+- `book.xsd` - XSD schema defining a book document structure
+- `book_valid.xml` - Valid XML document conforming to the schema
+- `book_invalid.xml` - Invalid XML document (invalid ISBN format)
 
 ## Architecture
 
@@ -176,8 +279,11 @@ cargo build
 # Run tests
 cargo test
 
-# Run example
-cargo run --example compare
+# Run examples
+cargo run --example validate         # Document validation
+cargo run --example inspect_schema   # Schema inspection
+cargo run --example xml_to_json      # XML to JSON conversion
+cargo run --example compare          # Compare with Python xmlschema
 
 # Check code
 cargo clippy
