@@ -117,9 +117,9 @@ This document tracks the progress of porting the Python xmlschema package to Rus
 - [ ] xsi:nil handling for nillable elements
 
 #### CLI Tool
-- [ ] Validate command
-- [ ] Convert command (XML to JSON)
-- [ ] Inspect command (schema introspection)
+- [x] Validate command
+- [x] Convert command (XML to JSON)
+- [x] Inspect command (schema introspection)
 - [ ] Download schemas command
 
 #### Polish
@@ -172,7 +172,7 @@ This document tracks the progress of porting the Python xmlschema package to Rus
 
 ### Phase 7: Polish & Remaining [IN PROGRESS]
 - [ ] HTTP/HTTPS loading
-- [ ] CLI tool commands
+- [x] CLI tool commands (inspect, xml2json, validate)
 - [ ] Schema composition (include/import)
 - [ ] Substitution groups
 - [ ] Performance optimization
@@ -234,6 +234,13 @@ This document tracks the progress of porting the Python xmlschema package to Rus
 - Implemented data converters
 - Achieved Python parity for schema dumps
 - Updated README and TODO documentation
+
+### Session 3 (2025-12-29)
+- Implemented CLI tool with clap
+- Added `inspect` command for schema introspection (JSON output, element/type lookup)
+- Added `xml2json` command with multiple formats (default, parker, badgerfish, unordered)
+- Added `validate` command with strict/lax modes
+- Created DITA/NISO bundle comparison test infrastructure with static facts
 
 ---
 
