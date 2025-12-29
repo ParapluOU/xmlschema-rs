@@ -333,6 +333,48 @@ fn test_cli_xml2json_invalid_format() {
 }
 
 // ============================================================================
+// Known Bugs - Tests that document current issues
+// ============================================================================
+
+/// BUG: Content model validation fails when unbounded element is followed by optional elements.
+///
+/// Schema defines: sequence(title, author[1..∞], published[0..1], pages[0..1])
+/// Document has: title, author, author, published, pages
+///
+/// The content model visitor doesn't correctly advance past the unbounded `author`
+/// elements to allow the subsequent optional `published` element.
+///
+/// This test asserts the CURRENT BROKEN BEHAVIOR. When the bug is fixed,
+/// this test will fail - update it to assert success instead.
+#[test]
+fn test_bug_unbounded_followed_by_optional() {
+    // book.xml has multiple authors followed by optional published/pages elements
+    let output = Command::new(xmlschema_bin())
+        .args([
+            "validate",
+            "--schema", schemas_dir().join("book.xsd").to_str().unwrap(),
+            fixtures_dir().join("book.xml").to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to execute command");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // BUG: This document IS valid but validation incorrectly rejects it.
+    // When this test fails, the bug has been fixed! Update to assert success.
+    assert!(
+        !output.status.success(),
+        "BUG FIXED? This valid document was previously rejected incorrectly. \
+         If validation now passes, update this test to assert success!"
+    );
+    assert!(
+        stdout.contains("Unexpected child element 'published'"),
+        "BUG FIXED? Expected the 'published' rejection error. \
+         If the error changed, the content model logic may have been updated."
+    );
+}
+
+// ============================================================================
 // Error Handling Tests
 // ============================================================================
 
