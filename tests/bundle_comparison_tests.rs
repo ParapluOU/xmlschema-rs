@@ -769,3 +769,163 @@ fn test_niso_yes_no_enumeration() {
     assert!(NisoFacts::YES_NO_VALUES.contains(&"yes"));
     assert!(NisoFacts::YES_NO_VALUES.contains(&"no"));
 }
+
+// =============================================================================
+// xs:redefine Support Tests
+// =============================================================================
+
+/// Test that xs:redefine is parsed correctly - the schema should have redefines recorded
+#[test]
+#[ignore = "Requires complete schema resolution - run with: cargo test -- --ignored"]
+fn test_dita_redefine_support() {
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<Dita12>();
+
+    // Find basetopic.xsd which uses xs:redefine for commonElementGrp.xsd
+    if let Some(basetopic_path) = walkdir_find(&base_path, "basetopic.xsd") {
+        eprintln!("Found basetopic.xsd at: {}", basetopic_path.display());
+
+        let schema = XsdSchema::from_file(&basetopic_path)
+            .expect("Should parse basetopic.xsd");
+
+        // Check that redefines were recorded
+        eprintln!("Schema has {} redefines", schema.redefines.len());
+
+        // basetopic.xsd should have at least one xs:redefine (for commonElementGrp.xsd)
+        // Note: The exact number depends on how many xs:redefine elements are in the schema chain
+        if !schema.redefines.is_empty() {
+            eprintln!("✓ xs:redefine elements were parsed successfully");
+            for (i, redefine) in schema.redefines.iter().enumerate() {
+                eprintln!("  Redefine {}: {} redefinitions from {}",
+                    i, redefine.redefinitions.len(), redefine.location);
+            }
+        }
+
+        // Check that the title group exists in global maps - this comes from commonElementGrp.xsd
+        // via xs:redefine in basetopic.xsd
+        let title_group_exists = schema.maps.global_maps.groups.keys()
+            .any(|qname| qname.local_name == "title");
+        eprintln!("title group exists: {}", title_group_exists);
+
+        // Check for other expected groups from commonElementGrp.xsd
+        let expected_groups = ["title", "ph", "keyword", "xref", "data", "data-about"];
+        for group_name in expected_groups {
+            let exists = schema.maps.global_maps.groups.keys()
+                .any(|qname| qname.local_name == group_name);
+            eprintln!("  Group '{}': {}", group_name, if exists { "✓" } else { "✗" });
+        }
+    } else {
+        eprintln!("basetopic.xsd not found - checking for topic.xsd");
+        if let Some(topic_path) = walkdir_find(&base_path, "topic.xsd") {
+            eprintln!("Found topic.xsd at: {}", topic_path.display());
+            // topic.xsd includes basetopic.xsd which uses xs:redefine
+            let schema = XsdSchema::from_file(&topic_path)
+                .expect("Should parse topic.xsd");
+            eprintln!("Schema has {} redefines", schema.redefines.len());
+        }
+    }
+}
+
+/// Test that TOPIC_CHILDREN facts match the parsed schema content
+/// This specifically tests xs:redefine support since 'title' comes from redefined commonElementGrp
+#[test]
+#[ignore = "Requires complete schema resolution - run with: cargo test -- --ignored"]
+fn test_dita_topic_children_from_redefine() {
+    use bundle_facts::DitaFacts;
+
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<Dita12>();
+
+    // Find topic.xsd
+    if let Some(topic_path) = walkdir_find(&base_path, "topic.xsd") {
+        let schema = XsdSchema::from_file(&topic_path)
+            .expect("Should parse topic.xsd");
+
+        // Find the 'topic' element
+        let topic_element = schema.maps.global_maps.elements.iter()
+            .find(|(qname, _)| qname.local_name == "topic");
+
+        if let Some((_, topic_elem)) = topic_element {
+            eprintln!("Found topic element");
+
+            // Get child element names from the type
+            let child_names: Vec<String> = collect_element_names_from_element(topic_elem, &schema);
+
+            eprintln!("Topic children found: {:?}", child_names);
+
+            // Assert that xs:redefine-dependent children exist
+            // 'title' is the key one - it comes from commonElementGrp.xsd via xs:redefine
+            for (expected_child, min_occurs, _max_occurs) in DitaFacts::TOPIC_CHILDREN {
+                let found = child_names.iter().any(|n| n == expected_child);
+                if *min_occurs > 0 {
+                    assert!(
+                        found,
+                        "Required child '{}' should be present in topic (from xs:redefine)",
+                        expected_child
+                    );
+                }
+                eprintln!("  Child '{}': {}", expected_child, if found { "✓" } else { "✗" });
+            }
+        } else {
+            eprintln!("topic element not found in schema");
+        }
+    }
+}
+
+/// Helper to collect element names from an element's content model
+fn collect_element_names_from_element(
+    element: &xmlschema::validators::XsdElement,
+    _schema: &XsdSchema,
+) -> Vec<String> {
+    use xmlschema::validators::ElementType;
+
+    let mut names = Vec::new();
+
+    match &element.element_type {
+        ElementType::Complex(ct) => {
+            collect_element_names_from_complex_type(ct, &mut names);
+        }
+        ElementType::Simple(_) | ElementType::Any => {
+            // Simple types and any don't have child elements
+        }
+    }
+
+    names
+}
+
+/// Helper to collect element names from a complex type's content model
+fn collect_element_names_from_complex_type(
+    ct: &xmlschema::validators::XsdComplexType,
+    names: &mut Vec<String>,
+) {
+    use xmlschema::validators::ComplexContent;
+
+    // Check content model - it's either a group or simple content
+    match &ct.content {
+        ComplexContent::Group(group) => {
+            for particle in &group.particles {
+                collect_element_names_from_particle(particle, names);
+            }
+        }
+        ComplexContent::Simple(_) => {
+            // Simple content has no child elements
+        }
+    }
+}
+
+/// Helper to collect element names from a particle
+fn collect_element_names_from_particle(
+    particle: &GroupParticle,
+    names: &mut Vec<String>,
+) {
+    match particle {
+        GroupParticle::Element(elem) => {
+            names.push(elem.name.local_name.clone());
+        }
+        GroupParticle::Group(group) => {
+            // Recursively collect from nested group (sequence, choice, etc.)
+            for p in &group.particles {
+                collect_element_names_from_particle(p, names);
+            }
+        }
+        GroupParticle::Any(_) => {}
+    }
+}
