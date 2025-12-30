@@ -79,3 +79,6 @@ codegen-units = 1
 
 [profile.bench]
 inherits = "release"
+
+# This prevents cargo from trying to include this in the parent workspace
+[workspace]
