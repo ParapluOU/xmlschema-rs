@@ -659,6 +659,8 @@ pub struct XsdRestrictedType {
     base_type_ref: Arc<dyn SimpleType + Send + Sync>,
     /// Additional facets
     facet_set: FacetSet,
+    /// Back-reference to original type when this is a redefinition (xs:redefine)
+    pub redefine: Option<Arc<dyn SimpleType + Send + Sync>>,
     /// Building errors
     errors: Vec<ParseError>,
     /// Is this type built?
@@ -676,6 +678,7 @@ impl XsdRestrictedType {
                 white_space: Some(white_space),
                 ..Default::default()
             },
+            redefine: None,
             errors: Vec::new(),
             built: true,
         }

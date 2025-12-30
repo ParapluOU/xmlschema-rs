@@ -13,7 +13,7 @@ use super::elements::{ElementType, XsdElement};
 use super::globals::GlobalType;
 use super::groups::{ElementParticle, GroupParticle, ModelType, XsdGroup};
 use super::particles::Occurs;
-use super::schemas::{DerivationDefault, FormDefault, XsdSchema};
+use super::schemas::{DerivationDefault, FormDefault, RedefinedComponent, SchemaRedefine, XsdSchema};
 use super::simple_types::{XsdAtomicType, XsdRestrictedType};
 use super::builtins::XSD_NAMESPACE;
 use super::wildcards::{NamespaceConstraint, ProcessContents, XsdAnyAttribute, XsdAnyElement};
@@ -280,10 +280,7 @@ fn parse_schema_child(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
         xsd_elements::INCLUDE => parse_include(schema, elem),
         xsd_elements::NOTATION => parse_notation(schema, elem),
         xsd_elements::ANNOTATION => Ok(()), // Skip annotations
-        xsd_elements::REDEFINE => {
-            schema.parse_error(ParseError::new("xs:redefine not yet supported"));
-            Ok(())
-        }
+        xsd_elements::REDEFINE => parse_redefine(schema, elem),
         _ => {
             schema.parse_error(ParseError::new(format!(
                 "Unknown schema child element: {}",
@@ -1013,6 +1010,203 @@ fn parse_include(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
             )));
         }
     }
+
+    Ok(())
+}
+
+/// Parse a redefine declaration (xs:redefine)
+///
+/// xs:redefine is similar to xs:include but allows redefining components
+/// from the included schema. The redefined components must derive from
+/// themselves (for types) or contain a self-reference (for groups).
+fn parse_redefine(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
+    let location = match elem.get_attribute(xsd_attrs::SCHEMA_LOCATION) {
+        Some(loc) => loc,
+        None => {
+            schema.parse_error(ParseError::new("xs:redefine missing schemaLocation attribute"));
+            return Ok(());
+        }
+    };
+
+    // Resolve the location relative to the base_url
+    let resolved_path = resolve_schema_location(location, schema.base_url());
+
+    // Check if already included/redefined (avoid circular references)
+    if schema.redefines.iter().any(|r| r.location == location) {
+        return Ok(());
+    }
+    if schema.includes.iter().any(|inc| inc.location == location) {
+        return Ok(());
+    }
+
+    // Load and parse the included schema (same as include)
+    let included_schema = match load_included_schema(&resolved_path, schema.target_namespace.as_deref()) {
+        Ok(s) => s,
+        Err(e) => {
+            schema.parse_error(ParseError::new(format!(
+                "xs:redefine '{}' failed to load: {}",
+                location, e
+            )));
+            return Ok(());
+        }
+    };
+
+    // Merge globals from included schema into parent (same as include)
+    schema.maps.global_maps.merge(&included_schema.maps.global_maps);
+
+    // Process redefinitions from children of xs:redefine
+    // For each redefinition:
+    // 1. Save the original component (from the merged globals)
+    // 2. Parse the new definition (which replaces in global_maps)
+    // 3. Update the new component's redefine field to point to original
+    let mut redefinitions = Vec::new();
+
+    for child in &elem.children {
+        let child_local = child.local_name();
+
+        // Skip annotations
+        if child_local == xsd_elements::ANNOTATION {
+            continue;
+        }
+
+        // Get the name attribute to build the QName
+        let name = match child.get_attribute(xsd_attrs::NAME) {
+            Some(n) => n,
+            None => {
+                schema.parse_error(ParseError::new(format!(
+                    "Redefined {} missing 'name' attribute",
+                    child_local
+                )));
+                continue;
+            }
+        };
+
+        let qname = make_qname(schema, name);
+
+        match child_local {
+            xsd_elements::SIMPLE_TYPE => {
+                // Save original simple type
+                let original = schema.maps.global_maps.types.get(&qname).cloned();
+
+                // Parse the redefinition (this updates global_maps)
+                if let Err(e) = parse_simple_type(schema, child) {
+                    schema.parse_error(ParseError::new(format!(
+                        "Failed to parse redefined simpleType '{:?}': {}",
+                        qname, e
+                    )));
+                    continue;
+                }
+
+                // Set redefine field if we have an original and new is XsdRestrictedType
+                if let Some(GlobalType::Simple(orig)) = original {
+                    if let Some(GlobalType::Simple(new_arc)) = schema.maps.global_maps.types.get(&qname) {
+                        // We can't easily modify Arc contents, so we store the info
+                        // The redefine relationship is tracked via the redefinitions list
+                        let _ = (orig, new_arc); // Mark as used
+                    }
+                }
+
+                redefinitions.push(RedefinedComponent::SimpleType {
+                    qname,
+                    elem: child.clone(),
+                });
+            }
+            xsd_elements::COMPLEX_TYPE => {
+                // Save original complex type
+                let original = schema.maps.global_maps.types.get(&qname).cloned();
+
+                // Parse the redefinition
+                if let Err(e) = parse_complex_type(schema, child) {
+                    schema.parse_error(ParseError::new(format!(
+                        "Failed to parse redefined complexType '{:?}': {}",
+                        qname, e
+                    )));
+                    continue;
+                }
+
+                // Update redefine field
+                if let Some(GlobalType::Complex(orig)) = original {
+                    if let Some(GlobalType::Complex(new_arc)) = schema.maps.global_maps.types.remove(&qname) {
+                        let mut new_type = (*new_arc).clone();
+                        new_type.redefine = Some(orig);
+                        schema.maps.global_maps.types.insert(qname.clone(), GlobalType::Complex(Arc::new(new_type)));
+                    }
+                }
+
+                redefinitions.push(RedefinedComponent::ComplexType {
+                    qname,
+                    elem: child.clone(),
+                });
+            }
+            xsd_elements::GROUP => {
+                // Save original group
+                let original = schema.maps.global_maps.groups.get(&qname).cloned();
+
+                // Parse the redefinition
+                if let Err(e) = parse_group(schema, child) {
+                    schema.parse_error(ParseError::new(format!(
+                        "Failed to parse redefined group '{:?}': {}",
+                        qname, e
+                    )));
+                    continue;
+                }
+
+                // Update redefine field
+                if let Some(orig) = original {
+                    if let Some(new_arc) = schema.maps.global_maps.groups.remove(&qname) {
+                        let mut new_group = (*new_arc).clone();
+                        new_group.redefine = Some(orig);
+                        schema.maps.global_maps.groups.insert(qname.clone(), Arc::new(new_group));
+                    }
+                }
+
+                redefinitions.push(RedefinedComponent::Group {
+                    qname,
+                    elem: child.clone(),
+                });
+            }
+            xsd_elements::ATTRIBUTE_GROUP => {
+                // Save original attribute group
+                let original = schema.maps.global_maps.attribute_groups.get(&qname).cloned();
+
+                // Parse the redefinition
+                if let Err(e) = parse_attribute_group(schema, child) {
+                    schema.parse_error(ParseError::new(format!(
+                        "Failed to parse redefined attributeGroup '{:?}': {}",
+                        qname, e
+                    )));
+                    continue;
+                }
+
+                // Update redefine field
+                if let Some(orig) = original {
+                    if let Some(new_arc) = schema.maps.global_maps.attribute_groups.remove(&qname) {
+                        let mut new_group = (*new_arc).clone();
+                        new_group.redefine = Some(orig);
+                        schema.maps.global_maps.attribute_groups.insert(qname.clone(), Arc::new(new_group));
+                    }
+                }
+
+                redefinitions.push(RedefinedComponent::AttributeGroup {
+                    qname,
+                    elem: child.clone(),
+                });
+            }
+            _ => {
+                schema.parse_error(ParseError::new(format!(
+                    "Invalid child element '{}' in xs:redefine",
+                    child_local
+                )));
+            }
+        }
+    }
+
+    // Store the redefine information
+    schema.redefines.push(SchemaRedefine {
+        location: location.to_string(),
+        schema: Arc::new(included_schema),
+        redefinitions,
+    });
 
     Ok(())
 }

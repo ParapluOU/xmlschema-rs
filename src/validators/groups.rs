@@ -169,6 +169,8 @@ pub struct XsdGroup {
     pub mixed: bool,
     /// Reference to another group (for xs:group ref="...")
     pub group_ref: Option<QName>,
+    /// Back-reference to original group when this is a redefinition (xs:redefine)
+    pub redefine: Option<Arc<XsdGroup>>,
     /// Parse errors
     errors: Vec<ParseError>,
 }
@@ -183,6 +185,7 @@ impl XsdGroup {
             occurs: Occurs::once(),
             mixed: false,
             group_ref: None,
+            redefine: None,
             errors: Vec::new(),
         }
     }
@@ -196,6 +199,7 @@ impl XsdGroup {
             occurs: Occurs::once(),
             mixed: false,
             group_ref: None,
+            redefine: None,
             errors: Vec::new(),
         }
     }
@@ -209,6 +213,7 @@ impl XsdGroup {
             occurs,
             mixed: false,
             group_ref: Some(ref_name),
+            redefine: None,
             errors: Vec::new(),
         }
     }

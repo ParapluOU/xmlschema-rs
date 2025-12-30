@@ -233,6 +233,9 @@ pub struct XsdComplexType {
     /// Open content (XSD 1.1)
     pub open_content: Option<XsdOpenContent>,
 
+    /// Back-reference to original type when this is a redefinition (xs:redefine)
+    pub redefine: Option<Arc<XsdComplexType>>,
+
     /// Parse errors
     errors: Vec<ParseError>,
 }
@@ -251,6 +254,7 @@ impl XsdComplexType {
             block: DerivationFlags::default(),
             final_deriv: DerivationFlags::default(),
             open_content: None,
+            redefine: None,
             errors: Vec::new(),
         }
     }
@@ -268,6 +272,7 @@ impl XsdComplexType {
             block: DerivationFlags::default(),
             final_deriv: DerivationFlags::default(),
             open_content: None,
+            redefine: None,
             errors: Vec::new(),
         }
     }
@@ -285,6 +290,7 @@ impl XsdComplexType {
             block: DerivationFlags::default(),
             final_deriv: DerivationFlags::default(),
             open_content: None,
+            redefine: None,
             errors: Vec::new(),
         }
     }
@@ -540,6 +546,7 @@ impl ComplexTypeBuilder {
             block: self.block,
             final_deriv: self.final_deriv,
             open_content: self.open_content,
+            redefine: None,
             errors: Vec::new(),
         }
     }

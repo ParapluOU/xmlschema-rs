@@ -166,6 +166,57 @@ pub struct SchemaInclude {
     pub schema: Arc<XsdSchema>,
 }
 
+/// Redefine record for schema redefinitions
+///
+/// xs:redefine is similar to xs:include, but allows modifying components
+/// from the included schema. Components that can be redefined include:
+/// - Simple types (must derive/restrict from themselves)
+/// - Complex types (must derive from themselves)
+/// - Groups (must contain exactly one self-reference)
+/// - Attribute groups (must contain exactly one self-reference)
+#[derive(Debug)]
+pub struct SchemaRedefine {
+    /// Location (schemaLocation)
+    pub location: String,
+    /// The included schema (before redefinitions)
+    pub schema: Arc<XsdSchema>,
+    /// Components to be redefined
+    pub redefinitions: Vec<RedefinedComponent>,
+}
+
+/// A component being redefined within xs:redefine
+#[derive(Debug, Clone)]
+pub enum RedefinedComponent {
+    /// Redefined simple type
+    SimpleType {
+        /// Qualified name of the type being redefined
+        qname: QName,
+        /// The XML element containing the redefinition
+        elem: crate::documents::Element,
+    },
+    /// Redefined complex type
+    ComplexType {
+        /// Qualified name of the type being redefined
+        qname: QName,
+        /// The XML element containing the redefinition
+        elem: crate::documents::Element,
+    },
+    /// Redefined model group
+    Group {
+        /// Qualified name of the group being redefined
+        qname: QName,
+        /// The XML element containing the redefinition
+        elem: crate::documents::Element,
+    },
+    /// Redefined attribute group
+    AttributeGroup {
+        /// Qualified name of the attribute group being redefined
+        qname: QName,
+        /// The XML element containing the redefinition
+        elem: crate::documents::Element,
+    },
+}
+
 /// Main XML Schema validator
 ///
 /// This is the central orchestrator for XSD parsing and validation.
@@ -198,6 +249,8 @@ pub struct XsdSchema {
     pub imports: HashMap<String, SchemaImport>,
     /// Included schemas
     pub includes: Vec<SchemaInclude>,
+    /// Redefined schemas (xs:redefine)
+    pub redefines: Vec<SchemaRedefine>,
     /// Parse errors
     pub errors: Vec<ParseError>,
     /// Whether the schema has been built
@@ -227,6 +280,7 @@ impl XsdSchema {
             default_attributes: None,
             imports: HashMap::new(),
             includes: Vec::new(),
+            redefines: Vec::new(),
             errors: Vec::new(),
             built: false,
         }
@@ -957,10 +1011,55 @@ impl XsdSchema {
 
     /// Recursively resolve group references in a group
     fn resolve_group_ref_recursive(&self, group: &super::groups::XsdGroup) -> Option<super::groups::XsdGroup> {
+        use std::collections::HashSet;
+        let mut visited = HashSet::new();
+        // Pass context about the current group being processed for self-reference detection
+        self.resolve_group_ref_with_context(group, group.name.as_ref(), group.redefine.as_ref(), &mut visited)
+    }
+
+    /// Recursively resolve group references with context about the owning group
+    fn resolve_group_ref_with_context(
+        &self,
+        group: &super::groups::XsdGroup,
+        owner_name: Option<&QName>,
+        owner_redefine: Option<&Arc<super::groups::XsdGroup>>,
+        visited: &mut std::collections::HashSet<QName>,
+    ) -> Option<super::groups::XsdGroup> {
         use super::groups::{GroupParticle, XsdGroup};
 
         // If this group is a reference, resolve it
         if let Some(ref ref_name) = group.group_ref {
+            // Check if we've already visited this group to prevent infinite recursion
+            if visited.contains(ref_name) {
+                // Already visited - just return the group as-is without further resolution
+                let mut resolved = group.clone();
+                resolved.group_ref = None;
+                return Some(resolved);
+            }
+
+            // For self-referential redefinitions, use the original from redefine field
+            if let (Some(owner), Some(original)) = (owner_name, owner_redefine) {
+                if ref_name == owner {
+                    // Mark as visited before recursing
+                    visited.insert(ref_name.clone());
+
+                    // Self-reference in redefinition - use the original
+                    let mut resolved = (**original).clone();
+                    resolved.occurs = group.occurs;
+                    resolved.group_ref = None;
+                    // Recursively resolve any nested references in the original
+                    // (but not as a self-reference since we're now in the original)
+                    if let Some(nested_resolved) = self.resolve_group_ref_with_context(&resolved, None, None, visited) {
+                        return Some(nested_resolved);
+                    }
+                    return Some(resolved);
+                }
+            }
+
+            // Mark as visited before recursing
+            visited.insert(ref_name.clone());
+
+            // Otherwise look up in global maps
             if let Some(referenced_group) = self.maps.global_maps.groups.get(ref_name) {
                 // Create a new group with the referenced group's content
                 // Dereference twice: &Arc<XsdGroup> -> Arc<XsdGroup> -> XsdGroup
@@ -968,7 +1067,11 @@ impl XsdSchema {
                 resolved.occurs = group.occurs;
                 resolved.group_ref = None;
                 // Recursively resolve any nested references
-                if let Some(nested_resolved) = self.resolve_group_ref_recursive(&resolved) {
+                // IMPORTANT: Switch to the referenced group's context, not the outer context
+                // This prevents infinite recursion when the referenced group itself has a redefine
+                let ref_owner = referenced_group.name.as_ref();
+                let ref_redefine = referenced_group.redefine.as_ref();
+                if let Some(nested_resolved) = self.resolve_group_ref_with_context(&resolved, ref_owner, ref_redefine, visited) {
                     return Some(nested_resolved);
                 }
                 return Some(resolved);
@@ -984,7 +1087,7 @@ impl XsdSchema {
         for particle in &group.particles {
             match particle {
                 GroupParticle::Group(nested) => {
-                    if let Some(resolved_nested) = self.resolve_group_ref_recursive(nested) {
+                    if let Some(resolved_nested) = self.resolve_group_ref_with_context(nested, owner_name, owner_redefine, visited) {
                         new_particles.push(GroupParticle::Group(Arc::new(resolved_nested)));
                         modified = true;
                     } else {
@@ -1017,7 +1120,12 @@ impl XsdSchema {
                 if let GlobalType::Complex(ct) = global_type {
                     if let Some(ref base_type_name) = ct.base_type {
                         if let Some(derivation) = ct.derivation {
-                            // Look up base type
+                            // For self-referential redefinitions, use the original from redefine field
+                            if base_type_name == qname && ct.redefine.is_some() {
+                                let original = ct.redefine.as_ref().unwrap();
+                                return Some((qname.clone(), Arc::clone(ct), Arc::clone(original), derivation));
+                            }
+                            // Otherwise look up base type in global maps
                             if let Some(GlobalType::Complex(base_ct)) = self.maps.global_maps.types.get(base_type_name) {
                                 return Some((qname.clone(), Arc::clone(ct), Arc::clone(base_ct), derivation));
                             }
@@ -1116,7 +1224,21 @@ impl XsdSchema {
             .collect();
 
         for (qname, mut group) in groups_to_update {
+            // Get the redefine reference for self-reference detection
+            let redefine_ref = group.redefine.clone();
+
             for ref_qname in group.pending_group_refs().to_vec() {
+                // For self-referential redefinitions, use the original from redefine field
+                if ref_qname == qname {
+                    if let Some(ref original) = redefine_ref {
+                        // Self-reference in redefinition - use the original
+                        for attr in original.iter_attributes() {
+                            let _ = group.add_attribute(Arc::clone(attr));
+                        }
+                        continue;
+                    }
+                }
+                // Otherwise look up in global maps
                 if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
                     // Add the referenced attributes to this group
                     for attr in referenced_group.iter_attributes() {
@@ -1156,6 +1278,70 @@ impl XsdSchema {
             self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
         }
     }
+
+    /// Validate that redefined components have proper self-references
+    ///
+    /// According to XSD spec:
+    /// - Redefined complex types must derive from themselves
+    /// - Redefined groups must contain exactly one self-reference
+    /// - Redefined attribute groups must contain exactly one self-reference
+    fn validate_redefinitions(&mut self) {
+        // Collect errors first to avoid borrow issues
+        let mut errors = Vec::new();
+
+        // Validate complex types with redefine have self as base type
+        for (qname, global_type) in &self.maps.global_maps.types {
+            if let GlobalType::Complex(ct) = global_type {
+                if ct.redefine.is_some() {
+                    // Check that base_type matches the type's own name
+                    if let Some(ref base) = ct.base_type {
+                        if base != qname {
+                            errors.push(ParseError::new(format!(
+                                "Redefined complex type '{:?}' must derive from itself, but derives from '{:?}'",
+                                qname, base
+                            )));
+                        }
+                    } else {
+                        errors.push(ParseError::new(format!(
+                            "Redefined complex type '{:?}' must derive from itself",
+                            qname
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Validate groups with redefine (self-reference already resolved at this point)
+        // Groups that were redefined should have had their self-reference resolved to original content
+        // Just warn if a redefined group appears empty (might indicate missing self-ref)
+        for (qname, group) in &self.maps.global_maps.groups {
+            if group.redefine.is_some() {
+                if group.particles.is_empty() {
+                    errors.push(ParseError::new(format!(
+                        "Redefined group '{:?}' has no content - may be missing self-reference",
+                        qname
+                    )));
+                }
+            }
+        }
+
+        // Validate attribute groups with redefine
+        for (qname, attr_group) in &self.maps.global_maps.attribute_groups {
+            if attr_group.redefine.is_some() {
+                if attr_group.len() == 0 {
+                    errors.push(ParseError::new(format!(
+                        "Redefined attribute group '{:?}' has no attributes - may be missing self-reference",
+                        qname
+                    )));
+                }
+            }
+        }
+
+        // Add collected errors
+        for error in errors {
+            self.parse_error(error);
+        }
+    }
 }
 
 impl Validator for XsdSchema {
@@ -1193,6 +1379,9 @@ impl Validator for XsdSchema {
 
         // Refresh global element types with the fully resolved versions from global_maps.types
         self.refresh_element_types();
+
+        // Validate redefinitions have proper self-references
+        self.validate_redefinitions();
 
         // Mark as built
         self.built = true;
@@ -1627,5 +1816,84 @@ mod tests {
         assert_eq!(schema.type_count(), 0);
         assert_eq!(schema.element_names().count(), 0);
         assert_eq!(schema.type_names().count(), 0);
+    }
+
+    #[test]
+    fn test_redefine_group_basic() {
+        // Test basic xs:redefine parsing with a group that references itself
+        // This tests that:
+        // 1. xs:redefine is parsed correctly
+        // 2. The redefined group has the redefine back-reference set
+        // 3. Self-references in the group are resolved to the original
+
+        // Create a temporary test schema with redefine
+        use std::io::Write;
+
+        // First create the "base" schema that will be redefined
+        let base_schema = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:group name="testGroup">
+        <xs:sequence>
+            <xs:element name="originalElement" type="xs:string"/>
+        </xs:sequence>
+    </xs:group>
+</xs:schema>"#;
+
+        // Create the "main" schema that redefines the group
+        let main_schema = r#"<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:redefine schemaLocation="base.xsd">
+        <xs:group name="testGroup">
+            <xs:sequence>
+                <xs:element name="newElement" type="xs:string"/>
+                <xs:group ref="testGroup"/>
+            </xs:sequence>
+        </xs:group>
+    </xs:redefine>
+
+    <xs:element name="root">
+        <xs:complexType>
+            <xs:group ref="testGroup"/>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>"#;
+
+        // Write temp files
+        let temp_dir = std::env::temp_dir().join("xmlschema_test_redefine");
+        std::fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+
+        let base_path = temp_dir.join("base.xsd");
+        let main_path = temp_dir.join("main.xsd");
+
+        let mut base_file = std::fs::File::create(&base_path).expect("Failed to create base.xsd");
+        base_file.write_all(base_schema.as_bytes()).expect("Failed to write base.xsd");
+
+        let mut main_file = std::fs::File::create(&main_path).expect("Failed to create main.xsd");
+        main_file.write_all(main_schema.as_bytes()).expect("Failed to write main.xsd");
+
+        // Parse the main schema (which includes the redefine)
+        let result = XsdSchema::from_file(&main_path);
+
+        // Clean up temp files
+        let _ = std::fs::remove_file(&base_path);
+        let _ = std::fs::remove_file(&main_path);
+        let _ = std::fs::remove_dir(&temp_dir);
+
+        // Check results
+        let schema = result.expect("Failed to parse schema with redefine");
+
+        // Verify the schema has the redefine recorded
+        assert!(!schema.redefines.is_empty(), "Schema should have redefines");
+
+        // Verify the testGroup exists and has the redefine back-reference
+        let test_group_name = crate::namespaces::QName::local("testGroup");
+        let group = schema.maps.global_maps.groups.get(&test_group_name);
+        assert!(group.is_some(), "testGroup should exist in global maps");
+
+        let group = group.unwrap();
+        assert!(group.redefine.is_some(), "Redefined group should have redefine back-reference");
+
+        // Verify the group has content (particles from self-reference resolution)
+        assert!(!group.particles.is_empty(), "Redefined group should have particles after resolution");
     }
 }

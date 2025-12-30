@@ -403,6 +403,8 @@ pub struct XsdAttributeGroup {
     pending_group_refs: Vec<QName>,
     /// Optional any attribute wildcard
     any_attribute: Option<Arc<XsdAnyAttribute>>,
+    /// Back-reference to original attribute group when this is a redefinition (xs:redefine)
+    pub redefine: Option<Arc<XsdAttributeGroup>>,
     /// Build errors
     errors: Vec<ParseError>,
     /// Whether fully built
@@ -418,6 +420,7 @@ impl XsdAttributeGroup {
             attribute_groups: Vec::new(),
             pending_group_refs: Vec::new(),
             any_attribute: None,
+            redefine: None,
             errors: Vec::new(),
             built: false,
         }
@@ -431,6 +434,7 @@ impl XsdAttributeGroup {
             attribute_groups: Vec::new(),
             pending_group_refs: Vec::new(),
             any_attribute: None,
+            redefine: None,
             errors: Vec::new(),
             built: false,
         }
