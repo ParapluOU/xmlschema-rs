@@ -14,7 +14,7 @@ use super::globals::GlobalType;
 use super::groups::{ElementParticle, GroupParticle, ModelType, XsdGroup};
 use super::particles::Occurs;
 use super::schemas::{DerivationDefault, FormDefault, RedefinedComponent, SchemaRedefine, XsdSchema};
-use super::simple_types::{XsdAtomicType, XsdRestrictedType};
+use super::simple_types::{XsdAtomicType, XsdListType, XsdRestrictedType};
 use super::builtins::XSD_NAMESPACE;
 use super::wildcards::{NamespaceConstraint, ProcessContents, XsdAnyAttribute, XsdAnyElement};
 
@@ -661,7 +661,7 @@ fn parse_simple_type(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
                 return parse_simple_restriction(schema, child, &qname, name);
             }
             xsd_elements::LIST => {
-                return parse_simple_list(schema, &qname, name);
+                return parse_simple_list(schema, child, &qname, name);
             }
             xsd_elements::UNION => {
                 return parse_simple_union(schema, &qname, name);
@@ -784,13 +784,48 @@ fn parse_simple_restriction(schema: &mut XsdSchema, elem: &Element, qname: &QNam
 }
 
 /// Parse a simple type list
-fn parse_simple_list(schema: &mut XsdSchema, qname: &QName, _name: &str) -> Result<()> {
-    // For list types, create a string-based type for now
-    // Full list type implementation would require the XsdListType
-    let simple = XsdAtomicType::with_name("string", qname.clone())
-        .map_err(|e| Error::Parse(ParseError::new(format!("Failed to create list type: {}", e))))?;
+fn parse_simple_list(schema: &mut XsdSchema, elem: &Element, qname: &QName, _name: &str) -> Result<()> {
+    // Get the itemType attribute
+    let item_type_attr = elem.get_attribute(xsd_attrs::ITEM_TYPE);
 
-    schema.maps.global_maps.types.insert(qname.clone(), GlobalType::Simple(Arc::new(simple)));
+    // Resolve the item type
+    let item_type: Arc<dyn super::simple_types::SimpleType + Send + Sync> = if let Some(item_str) = item_type_attr {
+        let (item_ns, item_local) = schema.resolve_qname(item_str);
+
+        // Create the item type QName - use XSD namespace if it's a builtin
+        let item_qname = if item_ns.is_some() {
+            QName::new(item_ns.map(|s| s.to_string()), item_local.to_string())
+        } else if resolve_builtin_name(&item_local).is_some() {
+            QName::namespaced(XSD_NAMESPACE, item_local)
+        } else {
+            // Could be a type in the same schema
+            QName::new(schema.target_namespace.clone(), item_local.to_string())
+        };
+
+        // Try to look up the item type from the schema
+        if let Some(existing_type) = schema.maps.lookup_simple_type(&item_qname) {
+            Arc::clone(existing_type)
+        } else {
+            // Fall back to creating an atomic type for builtins
+            let builtin_name = resolve_builtin_name(&item_local).unwrap_or("string");
+            Arc::new(XsdAtomicType::with_name(builtin_name, item_qname.clone())
+                .map_err(|e| Error::Parse(ParseError::new(format!("Unknown item type: {}", e))))?)
+        }
+    } else {
+        // Default to xs:string if no itemType is specified
+        let string_qname = QName::namespaced(XSD_NAMESPACE, "string");
+        if let Some(existing_type) = schema.maps.lookup_simple_type(&string_qname) {
+            Arc::clone(existing_type)
+        } else {
+            Arc::new(XsdAtomicType::with_name("string", string_qname)
+                .map_err(|e| Error::Parse(ParseError::new(format!("Failed to create string type: {}", e))))?)
+        }
+    };
+
+    // Create the list type with proper variety
+    let list_type = XsdListType::with_name(item_type, qname.clone());
+
+    schema.maps.global_maps.types.insert(qname.clone(), GlobalType::Simple(Arc::new(list_type)));
 
     Ok(())
 }
