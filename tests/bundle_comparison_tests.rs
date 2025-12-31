@@ -929,3 +929,165 @@ fn collect_element_names_from_particle(
         GroupParticle::Any(_) => {}
     }
 }
+
+/// Debug test to understand why topic content model is empty
+#[test]
+#[ignore = "Debug test - run with: cargo test debug_topic_content_model -- --ignored --nocapture"]
+fn debug_topic_content_model() {
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<Dita12>();
+
+    // Find topic.xsd
+    if let Some(topic_path) = walkdir_find(&base_path, "topic.xsd") {
+        eprintln!("Found topic.xsd at: {}", topic_path.display());
+
+        let schema = XsdSchema::from_file(&topic_path)
+            .expect("Should parse topic.xsd");
+
+        // Find the topic element
+        eprintln!("\n=== Global Elements ===");
+        for (qname, _elem) in schema.maps.global_maps.elements.iter() {
+            eprintln!("  Element: {:?}", qname);
+        }
+
+        // Find the topic.class type
+        eprintln!("\n=== Global Types ===");
+        for (qname, global_type) in schema.maps.global_maps.types.iter() {
+            if qname.local_name.contains("topic") {
+                eprintln!("  Type: {:?} -> {:?}", qname, match global_type {
+                    GlobalType::Complex(_) => "Complex",
+                    GlobalType::Simple(_) => "Simple",
+                });
+
+                if let GlobalType::Complex(ct) = global_type {
+                    eprintln!("    Content: {:?}", match &ct.content {
+                        ComplexContent::Group(g) => format!("Group(particles={})", g.particles.len()),
+                        ComplexContent::Simple(_) => "Simple".to_string(),
+                    });
+
+                    if let ComplexContent::Group(group) = &ct.content {
+                        eprintln!("    Particles:");
+                        for (i, particle) in group.particles.iter().enumerate() {
+                            match particle {
+                                GroupParticle::Element(elem) => {
+                                    eprintln!("      [{}] Element: {:?}", i, elem.name);
+                                }
+                                GroupParticle::Group(g) => {
+                                    eprintln!("      [{}] Group: name={:?}, group_ref={:?}, particles={}",
+                                        i, g.name, g.group_ref, g.particles.len());
+                                    // Recurse one level
+                                    for (j, p) in g.particles.iter().enumerate() {
+                                        match p {
+                                            GroupParticle::Element(e) => {
+                                                eprintln!("        [{}.{}] Element: {:?}", i, j, e.name);
+                                            }
+                                            GroupParticle::Group(gg) => {
+                                                eprintln!("        [{}.{}] Group: name={:?}, group_ref={:?}, particles={}",
+                                                    i, j, gg.name, gg.group_ref, gg.particles.len());
+                                            }
+                                            GroupParticle::Any(_) => {
+                                                eprintln!("        [{}.{}] Any", i, j);
+                                            }
+                                        }
+                                    }
+                                }
+                                GroupParticle::Any(_) => {
+                                    eprintln!("      [{}] Any", i);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check global groups
+        eprintln!("\n=== Global Groups ===");
+        for (qname, group) in schema.maps.global_maps.groups.iter() {
+            if qname.local_name.contains("topic") {
+                eprintln!("  Group: {:?} -> particles={}", qname, group.particles.len());
+            }
+        }
+
+        // Find the 'topic' element specifically
+        let topic_element = schema.maps.global_maps.elements.iter()
+            .find(|(qname, _)| qname.local_name == "topic");
+
+        if let Some((qname, topic_elem)) = topic_element {
+            eprintln!("\n=== Topic Element Details ===");
+            eprintln!("  QName: {:?}", qname);
+
+            use xmlschema::validators::ElementType;
+            match &topic_elem.element_type {
+                ElementType::Complex(ct) => {
+                    eprintln!("  Type: Complex");
+                    eprintln!("  Type Name: {:?}", ct.name);
+                    eprintln!("  Base Type: {:?}", ct.base_type);
+                    eprintln!("  Derivation: {:?}", ct.derivation);
+                    eprintln!("  Content: {:?}", match &ct.content {
+                        ComplexContent::Group(g) => format!("Group(particles={})", g.particles.len()),
+                        ComplexContent::Simple(_) => "Simple".to_string(),
+                    });
+
+                    // Print particle details
+                    if let ComplexContent::Group(group) = &ct.content {
+                        eprintln!("  Particles:");
+                        for (i, particle) in group.particles.iter().enumerate() {
+                            match particle {
+                                GroupParticle::Element(ep) => {
+                                    eprintln!("    [{}] Element: {:?}", i, ep.name);
+                                }
+                                GroupParticle::Group(g) => {
+                                    eprintln!("    [{}] Group: name={:?}, group_ref={:?}, particles={}",
+                                        i, g.name, g.group_ref, g.particles.len());
+                                    // Recurse one level
+                                    for (j, p) in g.particles.iter().enumerate() {
+                                        match p {
+                                            GroupParticle::Element(e) => {
+                                                eprintln!("      [{}.{}] Element: {:?}", i, j, e.name);
+                                            }
+                                            GroupParticle::Group(gg) => {
+                                                eprintln!("      [{}.{}] Group: name={:?}, group_ref={:?}, particles={}",
+                                                    i, j, gg.name, gg.group_ref, gg.particles.len());
+                                            }
+                                            GroupParticle::Any(_) => {
+                                                eprintln!("      [{}.{}] Any", i, j);
+                                            }
+                                        }
+                                    }
+                                }
+                                GroupParticle::Any(_) => {
+                                    eprintln!("    [{}] Any", i);
+                                }
+                            }
+                        }
+                    }
+
+                    // Look up this type in global_maps.types to compare
+                    if let Some(ref type_name) = ct.name {
+                        eprintln!("\n  === Lookup in global_maps.types ===");
+                        if let Some(global_type) = schema.maps.global_maps.types.get(type_name) {
+                            eprintln!("    FOUND: {:?}", match global_type {
+                                GlobalType::Complex(gct) => format!("Complex(particles={})",
+                                    match &gct.content {
+                                        ComplexContent::Group(g) => g.particles.len(),
+                                        ComplexContent::Simple(_) => 0,
+                                    }),
+                                GlobalType::Simple(_) => "Simple".to_string(),
+                            });
+                        } else {
+                            eprintln!("    NOT FOUND - type {:?} not in global_maps.types", type_name);
+                        }
+                    }
+                }
+                ElementType::Simple(_) => {
+                    eprintln!("  Type: Simple");
+                }
+                ElementType::Any => {
+                    eprintln!("  Type: Any");
+                }
+            }
+        }
+    } else {
+        eprintln!("topic.xsd not found");
+    }
+}
