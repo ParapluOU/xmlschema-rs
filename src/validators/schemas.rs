@@ -1204,6 +1204,105 @@ impl XsdSchema {
         }
     }
 
+    /// Resolve derivations for inline complex types in elements
+    ///
+    /// Elements can have inline anonymous complex types that use extension/restriction.
+    /// These need to be resolved separately since they're not in global_maps.types.
+    fn resolve_inline_element_type_derivations(&mut self) {
+        use super::complex_types::{ComplexContent, DerivationMethod};
+        use super::elements::ElementType;
+        use super::groups::{GroupParticle, ModelType, XsdGroup};
+
+        // Collect elements that have inline complex types needing derivation resolution
+        let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
+            .filter_map(|(elem_qname, elem)| {
+                if let ElementType::Complex(ct) = &elem.element_type {
+                    // Only process inline types (anonymous - no name)
+                    // Named types are handled in resolve_complex_type_derivations
+                    if ct.name.is_none() {
+                        if let Some(ref base_type_name) = ct.base_type {
+                            if let Some(derivation) = ct.derivation {
+                                // Look up base type in global maps
+                                if let Some(GlobalType::Complex(base_ct)) = self.maps.global_maps.types.get(base_type_name) {
+                                    return Some((elem_qname.clone(), Arc::clone(ct), Arc::clone(base_ct), derivation));
+                                }
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Resolve each element's inline type
+        for (elem_qname, derived_ct, base_ct, derivation) in elements_to_update {
+            let mut new_ct = (*derived_ct).clone();
+
+            match derivation {
+                DerivationMethod::Extension => {
+                    // For extension: inherit base content
+                    if let (ComplexContent::Group(base_group), ComplexContent::Group(ext_group)) =
+                        (&base_ct.content, &derived_ct.content)
+                    {
+                        if base_group.is_empty() {
+                            // Extension content stays as-is
+                        } else if ext_group.is_empty() {
+                            // No new content, just inherit base
+                            new_ct.content = ComplexContent::Group(Arc::clone(base_group));
+                        } else {
+                            // Both have content - create wrapper sequence
+                            let mut wrapper = XsdGroup::new(ModelType::Sequence);
+                            wrapper.particles.push(GroupParticle::Group(Arc::clone(base_group)));
+                            wrapper.particles.push(GroupParticle::Group(Arc::clone(ext_group)));
+                            new_ct.content = ComplexContent::Group(Arc::new(wrapper));
+                        }
+                    }
+
+                    // Inherit mixed from base if not explicitly set
+                    if !new_ct.mixed && base_ct.mixed {
+                        new_ct.mixed = base_ct.mixed;
+                    }
+
+                    // Inherit attributes from base type
+                    for attr in base_ct.attributes.iter_attributes() {
+                        if new_ct.attributes.get_attribute(attr.name()).is_none() {
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                        }
+                    }
+                }
+                DerivationMethod::Restriction => {
+                    // For restriction: the derived content model already replaces base
+                    if let ComplexContent::Group(ref ext_group) = new_ct.content {
+                        if ext_group.is_empty() {
+                            if let ComplexContent::Group(base_group) = &base_ct.content {
+                                new_ct.content = ComplexContent::Group(Arc::clone(base_group));
+                            }
+                        }
+                    }
+
+                    // Inherit mixed from base if not explicitly set
+                    if !new_ct.mixed {
+                        new_ct.mixed = base_ct.mixed;
+                    }
+
+                    // For restriction, inherit base attributes
+                    for attr in base_ct.attributes.iter_attributes() {
+                        if new_ct.attributes.get_attribute(attr.name()).is_none() {
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                        }
+                    }
+                }
+            }
+
+            // Update the element with the resolved type
+            if let Some(elem) = self.maps.global_maps.elements.get(&elem_qname) {
+                let mut new_elem = (**elem).clone();
+                new_elem.element_type = ElementType::Complex(Arc::new(new_ct));
+                self.maps.global_maps.elements.insert(elem_qname, Arc::new(new_elem));
+            }
+        }
+    }
+
     /// Resolve attribute group references
     ///
     /// This resolves pending attribute group references in:
@@ -1360,10 +1459,16 @@ impl Validator for XsdSchema {
         }
 
         // Resolve complex type derivations (extension/restriction)
+        // This merges base type content into derived types
         self.resolve_complex_type_derivations();
 
         // Resolve group references in complex types
+        // This resolves <xs:group ref="..."/> to their actual content
         self.resolve_group_references();
+
+        // Resolve derivations for inline element types AFTER group resolution
+        // This ensures the base types have fully resolved content
+        self.resolve_inline_element_type_derivations();
 
         // Resolve attribute group references
         self.resolve_attribute_group_references();
