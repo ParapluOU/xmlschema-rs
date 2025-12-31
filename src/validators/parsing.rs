@@ -14,7 +14,7 @@ use super::globals::GlobalType;
 use super::groups::{ElementParticle, GroupParticle, ModelType, XsdGroup};
 use super::particles::Occurs;
 use super::schemas::{DerivationDefault, FormDefault, RedefinedComponent, SchemaRedefine, XsdSchema};
-use super::simple_types::{XsdAtomicType, XsdListType, XsdRestrictedType};
+use super::simple_types::{XsdAtomicType, XsdListType, XsdRestrictedType, XsdUnionType};
 use super::builtins::XSD_NAMESPACE;
 use super::wildcards::{NamespaceConstraint, ProcessContents, XsdAnyAttribute, XsdAnyElement};
 
@@ -664,7 +664,7 @@ fn parse_simple_type(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
                 return parse_simple_list(schema, child, &qname, name);
             }
             xsd_elements::UNION => {
-                return parse_simple_union(schema, &qname, name);
+                return parse_simple_union(schema, child, &qname, name);
             }
             xsd_elements::ANNOTATION => {}
             _ => {}
@@ -831,13 +831,50 @@ fn parse_simple_list(schema: &mut XsdSchema, elem: &Element, qname: &QName, _nam
 }
 
 /// Parse a simple type union
-fn parse_simple_union(schema: &mut XsdSchema, qname: &QName, _name: &str) -> Result<()> {
-    // For union types, create a string-based type for now
-    // Full union type implementation would require the XsdUnionType
-    let simple = XsdAtomicType::with_name("string", qname.clone())
-        .map_err(|e| Error::Parse(ParseError::new(format!("Failed to create union type: {}", e))))?;
+fn parse_simple_union(schema: &mut XsdSchema, elem: &Element, qname: &QName, _name: &str) -> Result<()> {
+    // Get the memberTypes attribute (space-separated list of type QNames)
+    let member_types_attr = elem.get_attribute(xsd_attrs::MEMBER_TYPES);
 
-    schema.maps.global_maps.types.insert(qname.clone(), GlobalType::Simple(Arc::new(simple)));
+    // Resolve member types
+    let member_types: Vec<Arc<dyn super::simple_types::SimpleType + Send + Sync>> = if let Some(types_str) = member_types_attr {
+        types_str.split_whitespace()
+            .map(|type_name| {
+                let (member_ns, member_local) = schema.resolve_qname(type_name);
+
+                // Create the member type QName - use XSD namespace if it's a builtin
+                let member_qname = if member_ns.is_some() {
+                    QName::new(member_ns.map(|s| s.to_string()), member_local.to_string())
+                } else if resolve_builtin_name(&member_local).is_some() {
+                    QName::namespaced(XSD_NAMESPACE, member_local)
+                } else {
+                    // Could be a type in the same schema
+                    QName::new(schema.target_namespace.clone(), member_local.to_string())
+                };
+
+                // Try to look up the member type from the schema
+                let member_type: Arc<dyn super::simple_types::SimpleType + Send + Sync> =
+                    if let Some(existing_type) = schema.maps.lookup_simple_type(&member_qname) {
+                        Arc::clone(existing_type)
+                    } else {
+                        // Fall back to creating an atomic type for builtins
+                        let builtin_name = resolve_builtin_name(&member_local).unwrap_or("string");
+                        Arc::new(XsdAtomicType::with_name(builtin_name, member_qname.clone())
+                            .map_err(|e| Error::Parse(ParseError::new(format!("Unknown member type: {}", e))))?)
+                    };
+
+                Ok(member_type)
+            })
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        // No memberTypes attribute - could have inline simpleType children
+        // For now, create an empty union (this should be rare in practice)
+        vec![]
+    };
+
+    // Create the union type
+    let union_type = XsdUnionType::with_name(member_types, qname.clone());
+
+    schema.maps.global_maps.types.insert(qname.clone(), GlobalType::Simple(Arc::new(union_type)));
 
     Ok(())
 }

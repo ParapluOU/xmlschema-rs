@@ -146,6 +146,18 @@ pub trait SimpleType: TypeValidator {
     /// For named types, returns the formatted name.
     /// For builtin types, returns the XSD namespace qualified name.
     fn qualified_name_string(&self) -> Option<String>;
+
+    /// For List types: get the item type
+    /// Returns None for non-List types
+    fn item_type(&self) -> Option<&Arc<dyn SimpleType + Send + Sync>> {
+        None
+    }
+
+    /// For Union types: get the member types
+    /// Returns empty slice for non-Union types
+    fn member_types(&self) -> &[Arc<dyn SimpleType + Send + Sync>] {
+        &[]
+    }
 }
 
 // =============================================================================
@@ -494,6 +506,10 @@ impl SimpleType for XsdListType {
     fn qualified_name_string(&self) -> Option<String> {
         self.name.as_ref().map(format_qname)
     }
+
+    fn item_type(&self) -> Option<&Arc<dyn SimpleType + Send + Sync>> {
+        Some(&self.item_type)
+    }
 }
 
 // =============================================================================
@@ -643,6 +659,10 @@ impl SimpleType for XsdUnionType {
 
     fn qualified_name_string(&self) -> Option<String> {
         self.name.as_ref().map(format_qname)
+    }
+
+    fn member_types(&self) -> &[Arc<dyn SimpleType + Send + Sync>] {
+        &self.member_types
     }
 }
 
