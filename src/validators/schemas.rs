@@ -1029,31 +1029,32 @@ impl XsdSchema {
 
         // If this group is a reference, resolve it
         if let Some(ref ref_name) = group.group_ref {
-            // Check if we've already visited this group to prevent infinite recursion
-            if visited.contains(ref_name) {
-                // Already visited - just return the group as-is without further resolution
-                let mut resolved = group.clone();
-                resolved.group_ref = None;
-                return Some(resolved);
-            }
-
-            // For self-referential redefinitions, use the original from redefine field
+            // IMPORTANT: Check for self-referential redefinitions BEFORE checking visited set
+            // This allows xs:redefine patterns where a group references itself
+            // In that case, we substitute the original (pre-redefine) content
             if let (Some(owner), Some(original)) = (owner_name, owner_redefine) {
                 if ref_name == owner {
-                    // Mark as visited before recursing
-                    visited.insert(ref_name.clone());
-
                     // Self-reference in redefinition - use the original
                     let mut resolved = (**original).clone();
                     resolved.occurs = group.occurs;
                     resolved.group_ref = None;
                     // Recursively resolve any nested references in the original
                     // (but not as a self-reference since we're now in the original)
+                    // Don't add to visited - the original is different from the redefined version
                     if let Some(nested_resolved) = self.resolve_group_ref_with_context(&resolved, None, None, visited) {
                         return Some(nested_resolved);
                     }
                     return Some(resolved);
                 }
+            }
+
+            // Check if we've already visited this group to prevent infinite recursion
+            // (but only for non-self-references)
+            if visited.contains(ref_name) {
+                // Already visited - just return the group as-is without further resolution
+                let mut resolved = group.clone();
+                resolved.group_ref = None;
+                return Some(resolved);
             }
 
             // Mark as visited before recursing
@@ -1308,45 +1309,75 @@ impl XsdSchema {
     /// This resolves pending attribute group references in:
     /// 1. Global attribute groups that reference other attribute groups
     /// 2. Complex types whose attribute groups reference other attribute groups
+    ///
+    /// The resolution runs in a loop until no more changes are made, ensuring
+    /// all transitive references are resolved regardless of HashMap iteration order.
     fn resolve_attribute_group_references(&mut self) {
-        use super::attributes::XsdAttributeGroup;
-
         // First, resolve references in global attribute groups
-        let groups_to_update: Vec<_> = self.maps.global_maps.attribute_groups.iter()
-            .filter_map(|(qname, group)| {
-                if group.has_pending_refs() {
-                    Some((qname.clone(), (**group).clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for (qname, mut group) in groups_to_update {
-            // Get the redefine reference for self-reference detection
-            let redefine_ref = group.redefine.clone();
-
-            for ref_qname in group.pending_group_refs().to_vec() {
-                // For self-referential redefinitions, use the original from redefine field
-                if ref_qname == qname {
-                    if let Some(ref original) = redefine_ref {
-                        // Self-reference in redefinition - use the original
-                        for attr in original.iter_attributes() {
-                            let _ = group.add_attribute(Arc::clone(attr));
-                        }
-                        continue;
+        // Loop until no more changes are made (handles transitive references and non-deterministic iteration)
+        let max_iterations = 100; // Prevent infinite loops
+        for iteration in 0..max_iterations {
+            let groups_to_update: Vec<_> = self.maps.global_maps.attribute_groups.iter()
+                .filter_map(|(qname, group)| {
+                    if group.has_pending_refs() {
+                        Some((qname.clone(), (**group).clone()))
+                    } else {
+                        None
                     }
-                }
-                // Otherwise look up in global maps
-                if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
-                    // Add the referenced attributes to this group
-                    for attr in referenced_group.iter_attributes() {
-                        let _ = group.add_attribute(Arc::clone(attr));
-                    }
-                }
+                })
+                .collect();
+
+            if groups_to_update.is_empty() {
+                break;
             }
-            group.clear_pending_refs();
-            self.maps.global_maps.attribute_groups.insert(qname, Arc::new(group));
+
+            if iteration == max_iterations - 1 {
+                eprintln!("Warning: Attribute group resolution reached max iterations");
+            }
+
+            for (qname, mut group) in groups_to_update {
+                // Get the redefine reference for self-reference detection
+                let redefine_ref = group.redefine.clone();
+
+                for ref_qname in group.pending_group_refs().to_vec() {
+                    // For self-referential redefinitions, use the original from redefine field
+                    if ref_qname == qname {
+                        if let Some(ref original) = redefine_ref {
+                            // Self-reference in redefinition - use the original
+                            for attr in original.iter_attributes() {
+                                let _ = group.add_attribute(Arc::clone(attr));
+                            }
+                            continue;
+                        }
+                    }
+                    // Otherwise look up in global maps
+                    if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
+                        // Only add attributes if the referenced group has been fully resolved
+                        // (no pending refs), otherwise we'll get them in a later iteration
+                        if !referenced_group.has_pending_refs() {
+                            for attr in referenced_group.iter_attributes() {
+                                let _ = group.add_attribute(Arc::clone(attr));
+                            }
+                        }
+                    }
+                }
+
+                // Only clear pending refs if all referenced groups have been resolved
+                let all_resolved = group.pending_group_refs().iter().all(|ref_qname| {
+                    if *ref_qname == qname {
+                        return true; // Self-reference is always handled
+                    }
+                    self.maps.global_maps.attribute_groups
+                        .get(ref_qname)
+                        .map_or(true, |g| !g.has_pending_refs())
+                });
+
+                if all_resolved {
+                    group.clear_pending_refs();
+                }
+
+                self.maps.global_maps.attribute_groups.insert(qname, Arc::new(group));
+            }
         }
 
         // Then, resolve references in complex types' attribute groups

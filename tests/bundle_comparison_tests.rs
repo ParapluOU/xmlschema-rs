@@ -1091,3 +1091,164 @@ fn debug_topic_content_model() {
         eprintln!("topic.xsd not found");
     }
 }
+
+// =============================================================================
+// Debug: Content Model Resolution Test
+// =============================================================================
+
+#[test]
+fn test_dita_conbody_children() {
+    // Extract DITA schemas
+    let (_temp_dir, base_path) = extract_bundle_to_temp::<Dita12>();
+
+    // Find concept.xsd which defines conbody
+    if let Some(concept_path) = walkdir_find(&base_path, "concept.xsd") {
+        eprintln!("Found concept.xsd at: {}", concept_path.display());
+
+        // Parse with xmlschema-rs
+        let schema = XsdSchema::from_file(&concept_path)
+            .expect("Failed to parse concept schema");
+
+        // Find conbody.type or conbody complex type
+        let conbody_type_names: Vec<_> = schema.maps.global_maps.types.iter()
+            .filter_map(|(qname, _)| {
+                let name = qname.to_string().to_lowercase();
+                if name.contains("conbody") {
+                    Some(qname.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        eprintln!("Types containing 'conbody': {:?}", conbody_type_names);
+
+        // Debug: List all groups and check for fig
+        eprintln!("\n--- Groups in schema ---");
+        for (qname, group) in schema.maps.global_maps.groups.iter() {
+            let children = collect_group_children(group);
+            let has_fig = children.iter().any(|c| c.to_lowercase() == "fig");
+            let _has_group_ref = group.group_ref.is_some();
+            let particle_count = group.particles.len();
+
+            // Show more groups for debugging
+            // Show p, ul, fig and similar groups to understand structure
+            let name_lower = qname.to_string().to_lowercase();
+            if has_fig || name_lower.contains("basic")
+                || name_lower.contains("fig")
+                || name_lower.contains("body.cnt")
+                || name_lower.contains("conbody")
+                || name_lower == "p" || name_lower == "ul" || name_lower == "note" {
+                eprintln!("Group {:?}:", qname);
+                eprintln!("    particles: {}, group_ref: {:?}", particle_count, group.group_ref);
+                eprintln!("    resolved children: {} (has_fig={})", children.len(), has_fig);
+                eprintln!("    redefine: {:?}", group.redefine.as_ref().map(|r| format!("name={:?}, particles={}", r.name, r.particles.len())));
+                for (i, particle) in group.particles.iter().enumerate() {
+                    match particle {
+                        GroupParticle::Element(ep) => eprintln!("      [{}] Element: {:?}", i, ep.name),
+                        GroupParticle::Group(g) => eprintln!("      [{}] Group: name={:?}, ref={:?}, particles={}", i, g.name, g.group_ref, g.particles.len()),
+                        GroupParticle::Any(_) => eprintln!("      [{}] Any", i),
+                    }
+                }
+                // Show redefine content if present
+                if let Some(ref orig) = group.redefine {
+                    eprintln!("    REDEFINE original particles:");
+                    for (i, particle) in orig.particles.iter().enumerate() {
+                        match particle {
+                            GroupParticle::Element(ep) => eprintln!("      [orig {}] Element: {:?}", i, ep.name),
+                            GroupParticle::Group(g) => {
+                                eprintln!("      [orig {}] Group: name={:?}, ref={:?}, particles={}", i, g.name, g.group_ref, g.particles.len());
+                                // Recurse one level deeper
+                                for (j, nested) in g.particles.iter().enumerate() {
+                                    match nested {
+                                        GroupParticle::Element(ep) => eprintln!("        [orig {} nested {}] Element: {:?}", i, j, ep.name),
+                                        GroupParticle::Group(g2) => eprintln!("        [orig {} nested {}] Group: ref={:?}, particles={}", i, j, g2.group_ref, g2.particles.len()),
+                                        GroupParticle::Any(_) => eprintln!("        [orig {} nested {}] Any", i, j),
+                                    }
+                                }
+                            },
+                            GroupParticle::Any(_) => eprintln!("      [orig {}] Any", i),
+                        }
+                    }
+                }
+            }
+        }
+
+        // Debug: Check if fig element exists
+        let fig_elements: Vec<_> = schema.maps.global_maps.elements.iter()
+            .filter_map(|(qname, _)| {
+                if qname.to_string().to_lowercase().contains("fig") {
+                    Some(qname.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        eprintln!("\n--- Elements containing 'fig': {:?}", fig_elements);
+
+        // Debug: Find groups that directly contain a fig element particle
+        eprintln!("\n--- Groups containing 'fig' element directly ---");
+        for (qname, group) in schema.maps.global_maps.groups.iter() {
+            let has_fig_element = group.particles.iter().any(|p| {
+                if let GroupParticle::Element(ep) = p {
+                    ep.name.to_string().to_lowercase() == "fig"
+                } else {
+                    false
+                }
+            });
+            if has_fig_element {
+                eprintln!("  {:?} has fig element", qname);
+            }
+        }
+
+        // Get children of conbody.class
+        let mut found_conbody = false;
+        for (qname, global_type) in schema.maps.global_maps.types.iter() {
+            let name = qname.to_string().to_lowercase();
+            if name.contains("conbody") {
+                found_conbody = true;
+                eprintln!("\nType: {:?}", qname);
+                if let GlobalType::Complex(ct) = global_type {
+                    eprintln!("  Content type: {:?}", std::mem::discriminant(&ct.content));
+                    if let ComplexContent::Group(group) = &ct.content {
+                        let children: Vec<_> = collect_group_children(&group);
+                        eprintln!("  Children ({}):", children.len());
+                        let has_fig = children.iter().any(|c| c.to_lowercase().contains("fig"));
+                        eprintln!("  Has fig: {}", has_fig);
+                        for child in &children {
+                            eprintln!("    - {}", child);
+                        }
+
+                        // Assert that fig should be in the children
+                        // (conbody should allow fig through body.cnt -> basic.block -> fig)
+                        assert!(has_fig, "conbody should have 'fig' as a valid child element through group resolution");
+                    } else {
+                        eprintln!("  Content is not a Group, skipping children check");
+                    }
+                }
+            }
+        }
+        assert!(found_conbody, "Should have found a conbody type");
+    } else {
+        eprintln!("concept.xsd not found");
+    }
+}
+
+/// Recursively collect children from a group
+fn collect_group_children(group: &xmlschema::validators::XsdGroup) -> Vec<String> {
+    let mut children = Vec::new();
+    for particle in &group.particles {
+        match particle {
+            GroupParticle::Element(ep) => {
+                children.push(ep.name.to_string());
+            }
+            GroupParticle::Group(nested) => {
+                children.extend(collect_group_children(nested));
+            }
+            GroupParticle::Any(_) => {
+                children.push("##any".to_string());
+            }
+        }
+    }
+    children
+}
