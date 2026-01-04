@@ -18,6 +18,7 @@ use super::simple_types::{XsdAtomicType, XsdListType, XsdRestrictedType, XsdUnio
 use super::builtins::XSD_NAMESPACE;
 use super::wildcards::{NamespaceConstraint, ProcessContents, XsdAnyAttribute, XsdAnyElement};
 
+use crate::catalog::XmlCatalog;
 use crate::documents::{Document, Element};
 use crate::error::{Error, ParseError, Result};
 use crate::loaders::Loader;
@@ -179,6 +180,63 @@ impl XsdSchema {
         let mut schema = XsdSchema::new();
         schema.source.url = Some(path.to_string_lossy().to_string());
         schema.source.base_url = path.parent().map(|p| p.to_string_lossy().to_string());
+
+        // Parse the schema element (this will process includes with base_url set)
+        parse_schema_element(&mut schema, root)?;
+
+        // Build the schema
+        schema.build()?;
+
+        Ok(schema)
+    }
+
+    /// Parse an XSD schema from a file path with an XML catalog for URN resolution
+    ///
+    /// The catalog is used to resolve URN-based schema locations (like those in DITA 1.3)
+    /// to actual file paths. If the catalog path is provided, it will be loaded and used
+    /// to resolve includes/imports that use URNs instead of relative paths.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let schema = XsdSchema::from_file_with_catalog(
+    ///     "schemas/ditabase.xsd",
+    ///     Some("schemas/catalog.xml"),
+    /// )?;
+    /// ```
+    pub fn from_file_with_catalog(
+        path: impl AsRef<Path>,
+        catalog_path: Option<impl AsRef<Path>>,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let location = Location::Path(path.to_path_buf());
+        let loader = Loader::new();
+        let content = loader.load(&location)?;
+
+        // Load catalog if provided
+        let catalog = if let Some(cat_path) = catalog_path {
+            Some(Arc::new(XmlCatalog::from_file(cat_path)?))
+        } else {
+            None
+        };
+
+        // Parse the document
+        let doc = Document::from_string(&content)?;
+        let root = doc.root().ok_or_else(|| Error::Parse(ParseError::new("Empty document")))?;
+
+        // Verify this is a schema element
+        if root.local_name() != xsd_elements::SCHEMA {
+            return Err(Error::Parse(ParseError::new(format!(
+                "Expected xs:schema root element, got {}",
+                root.local_name()
+            ))));
+        }
+
+        // Create schema and set source BEFORE parsing (so includes can resolve)
+        let mut schema = XsdSchema::new();
+        schema.source.url = Some(path.to_string_lossy().to_string());
+        schema.source.base_url = path.parent().map(|p| p.to_string_lossy().to_string());
+        schema.source.catalog = catalog;
 
         // Parse the schema element (this will process includes with base_url set)
         parse_schema_element(&mut schema, root)?;
@@ -975,9 +1033,9 @@ fn parse_import(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
     // If we have a schemaLocation, try to load the imported schema
     if let Some(ref loc) = location {
         if let Some(ref ns) = namespace {
-            let resolved_path = resolve_schema_location(loc, schema.base_url());
+            let resolved_path = resolve_schema_location(loc, schema.base_url(), schema.catalog());
 
-            match load_imported_schema(&resolved_path, Some(ns)) {
+            match load_imported_schema(&resolved_path, Some(ns), schema.source.catalog.clone()) {
                 Ok(imported_schema) => {
                     // Update the import record with the loaded schema
                     if let Some(import) = schema.imports.get_mut(ns) {
@@ -1000,7 +1058,11 @@ fn parse_import(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
 }
 
 /// Load and parse an imported schema
-fn load_imported_schema(path: &Path, expected_namespace: Option<&str>) -> Result<XsdSchema> {
+fn load_imported_schema(
+    path: &Path,
+    expected_namespace: Option<&str>,
+    catalog: Option<Arc<XmlCatalog>>,
+) -> Result<XsdSchema> {
     // Read the file
     let content = std::fs::read_to_string(path).map_err(|e| {
         Error::Resource(format!("Failed to read imported schema '{}': {}", path.display(), e))
@@ -1022,6 +1084,7 @@ fn load_imported_schema(path: &Path, expected_namespace: Option<&str>) -> Result
     let mut imported_schema = XsdSchema::new();
     imported_schema.source.url = Some(path.to_string_lossy().to_string());
     imported_schema.source.base_url = path.parent().map(|p| p.to_string_lossy().to_string());
+    imported_schema.source.catalog = catalog;
 
     // Parse the schema element
     parse_schema_element(&mut imported_schema, root)?;
@@ -1054,8 +1117,8 @@ fn parse_include(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
         }
     };
 
-    // Resolve the location relative to the base_url
-    let resolved_path = resolve_schema_location(location, schema.base_url());
+    // Resolve the location relative to the base_url (with catalog support)
+    let resolved_path = resolve_schema_location(location, schema.base_url(), schema.catalog());
 
     // Check if already included (avoid circular includes)
     if schema.includes.iter().any(|inc| inc.location == location) {
@@ -1063,7 +1126,7 @@ fn parse_include(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
     }
 
     // Load and parse the included schema
-    match load_included_schema(&resolved_path, schema.target_namespace.as_deref()) {
+    match load_included_schema(&resolved_path, schema.target_namespace.as_deref(), schema.source.catalog.clone()) {
         Ok(included_schema) => {
             // Merge globals from included schema into parent
             schema.maps.global_maps.merge(&included_schema.maps.global_maps);
@@ -1100,8 +1163,8 @@ fn parse_redefine(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
         }
     };
 
-    // Resolve the location relative to the base_url
-    let resolved_path = resolve_schema_location(location, schema.base_url());
+    // Resolve the location relative to the base_url (with catalog support)
+    let resolved_path = resolve_schema_location(location, schema.base_url(), schema.catalog());
 
     // Check if already included/redefined (avoid circular references)
     if schema.redefines.iter().any(|r| r.location == location) {
@@ -1112,7 +1175,7 @@ fn parse_redefine(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
     }
 
     // Load and parse the included schema (same as include)
-    let included_schema = match load_included_schema(&resolved_path, schema.target_namespace.as_deref()) {
+    let included_schema = match load_included_schema(&resolved_path, schema.target_namespace.as_deref(), schema.source.catalog.clone()) {
         Ok(s) => s,
         Err(e) => {
             schema.parse_error(ParseError::new(format!(
@@ -1283,8 +1346,25 @@ fn parse_redefine(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
     Ok(())
 }
 
-/// Resolve a schemaLocation relative to a base URL
-fn resolve_schema_location(location: &str, base_url: Option<&str>) -> PathBuf {
+/// Resolve a schemaLocation relative to a base URL, using catalog if available
+///
+/// Resolution order:
+/// 1. Check XML catalog for URN/system ID mapping
+/// 2. If location is absolute, use it directly
+/// 3. Resolve relative to base_url if available
+/// 4. Use the location as-is
+fn resolve_schema_location(
+    location: &str,
+    base_url: Option<&str>,
+    catalog: Option<&XmlCatalog>,
+) -> PathBuf {
+    // First, try to resolve using the catalog
+    if let Some(cat) = catalog {
+        if let Some(resolved) = cat.resolve(location) {
+            return PathBuf::from(resolved);
+        }
+    }
+
     let location_path = Path::new(location);
 
     // If location is absolute, use it directly
@@ -1303,7 +1383,11 @@ fn resolve_schema_location(location: &str, base_url: Option<&str>) -> PathBuf {
 }
 
 /// Load and parse an included schema
-fn load_included_schema(path: &Path, parent_namespace: Option<&str>) -> Result<XsdSchema> {
+fn load_included_schema(
+    path: &Path,
+    parent_namespace: Option<&str>,
+    catalog: Option<Arc<XmlCatalog>>,
+) -> Result<XsdSchema> {
     // Read the file
     let content = std::fs::read_to_string(path).map_err(|e| {
         Error::Resource(format!("Failed to read included schema '{}': {}", path.display(), e))
@@ -1325,6 +1409,7 @@ fn load_included_schema(path: &Path, parent_namespace: Option<&str>) -> Result<X
     let mut included_schema = XsdSchema::new();
     included_schema.source.url = Some(path.to_string_lossy().to_string());
     included_schema.source.base_url = path.parent().map(|p| p.to_string_lossy().to_string());
+    included_schema.source.catalog = catalog;
 
     // Parse the schema element
     parse_schema_element(&mut included_schema, root)?;

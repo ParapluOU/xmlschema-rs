@@ -10,6 +10,7 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::catalog::XmlCatalog;
 use super::attributes::{XsdAttribute, XsdAttributeGroup};
 use super::base::{ValidationMode, ValidationStatus, Validator};
 use super::builders::{XsdBuilders, XsdVersion};
@@ -126,7 +127,7 @@ impl DerivationDefault {
 }
 
 /// Schema source information
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SchemaSource {
     /// URL or file path of the schema
     pub url: Option<String>,
@@ -134,16 +135,8 @@ pub struct SchemaSource {
     pub base_url: Option<String>,
     /// Namespace declarations from the schema root
     pub namespaces: HashMap<String, String>,
-}
-
-impl Default for SchemaSource {
-    fn default() -> Self {
-        Self {
-            url: None,
-            base_url: None,
-            namespaces: HashMap::new(),
-        }
-    }
+    /// XML Catalog for resolving URN-based schema locations
+    pub catalog: Option<Arc<XmlCatalog>>,
 }
 
 /// Import record for a namespace
@@ -343,6 +336,11 @@ impl XsdSchema {
     /// Get the base URL
     pub fn base_url(&self) -> Option<&str> {
         self.source.base_url.as_deref()
+    }
+
+    /// Get the XML catalog (if any)
+    pub fn catalog(&self) -> Option<&XmlCatalog> {
+        self.source.catalog.as_ref().map(|arc| arc.as_ref())
     }
 
     /// Record a parse error

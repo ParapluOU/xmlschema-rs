@@ -47,6 +47,7 @@ pub mod locations;
 // Core modules - Wave 3: Resource Loading
 pub mod loaders;
 pub mod documents;
+pub mod catalog;
 
 // Validators - Wave 4+
 pub mod validators;
@@ -69,6 +70,7 @@ pub mod xpath;
 
 // Re-exports for convenience
 pub use error::{Error, Result};
+pub use catalog::XmlCatalog;
 // pub use validators::Schema;  // Will be implemented later
 
 /// Version of the xmlschema-rs library
