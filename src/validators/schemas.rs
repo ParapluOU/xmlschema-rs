@@ -5,10 +5,10 @@
 //!
 //! Based on xmlschema/validators/schemas.py
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::catalog::XmlCatalog;
 use super::attributes::{XsdAttribute, XsdAttributeGroup};
@@ -127,7 +127,7 @@ impl DerivationDefault {
 }
 
 /// Schema source information
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SchemaSource {
     /// URL or file path of the schema
     pub url: Option<String>,
@@ -137,6 +137,21 @@ pub struct SchemaSource {
     pub namespaces: HashMap<String, String>,
     /// XML Catalog for resolving URN-based schema locations
     pub catalog: Option<Arc<XmlCatalog>>,
+    /// Tracks loaded schema paths to prevent circular includes.
+    /// Shared across all schemas in an include chain via Arc<Mutex<>>.
+    pub loaded_paths: Arc<Mutex<HashSet<PathBuf>>>,
+}
+
+impl Default for SchemaSource {
+    fn default() -> Self {
+        Self {
+            url: None,
+            base_url: None,
+            namespaces: HashMap::new(),
+            catalog: None,
+            loaded_paths: Arc::new(Mutex::new(HashSet::new())),
+        }
+    }
 }
 
 /// Import record for a namespace
@@ -248,6 +263,12 @@ pub struct XsdSchema {
     pub errors: Vec<ParseError>,
     /// Whether the schema has been built
     built: bool,
+    /// Pending include locations (for iterative processing)
+    /// These are collected during initial parsing and processed later
+    /// to avoid deep recursion that can cause stack overflow.
+    pub pending_include_locations: Vec<String>,
+    /// Pending redefine locations (for iterative processing)
+    pub pending_redefine_locations: Vec<String>,
 }
 
 impl Default for XsdSchema {
@@ -276,6 +297,8 @@ impl XsdSchema {
             redefines: Vec::new(),
             errors: Vec::new(),
             built: false,
+            pending_include_locations: Vec::new(),
+            pending_redefine_locations: Vec::new(),
         }
     }
 
@@ -1911,6 +1934,7 @@ mod tests {
             url: Some("http://example.com/schema.xsd".to_string()),
             base_url: Some("http://example.com/".to_string()),
             namespaces: HashMap::new(),
+            ..Default::default()
         };
 
         assert_eq!(source.url.as_deref(), Some("http://example.com/schema.xsd"));
