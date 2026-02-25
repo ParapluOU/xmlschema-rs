@@ -4,6 +4,15 @@ A Rust implementation of XML Schema (XSD 1.0 and XSD 1.1) for validation and dat
 
 This library is a port of the Python [xmlschema](https://github.com/sissaschool/xmlschema) package, providing high-performance XML Schema validation and data conversion capabilities in Rust.
 
+> ### Looking for IT services?
+> <img src="https://fromulo.com/codesociety.png" align="left" width="80" alt="CodeSociety">
+>
+> **[CodeSociety](https://codesocietyhub.com/)** is our consulting & contracting arm — specializing in
+> **IT architecture**, **XML authoring systems**, **FontoXML integration**, and **TerminusDB consulting**.
+> We build structured content platforms and data solutions that power digital publishing.
+>
+> **[Let's talk! &#8594;](https://codesocietyhub.com/contact.html)**
+
 ## Status
 
 **Active Development** - Core XSD parsing and validation infrastructure is complete. The library can parse complex XSD schemas and resolve forward references with Python parity.
