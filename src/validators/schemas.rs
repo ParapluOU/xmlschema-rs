@@ -1510,31 +1510,13 @@ impl Validator for XsdSchema {
             self.register_builtins()?;
         }
 
-        // Resolve complex type derivations (extension/restriction)
-        // This merges base type content into derived types
         self.resolve_complex_type_derivations();
-
-        // Resolve group references in complex types
-        // This resolves <xs:group ref="..."/> to their actual content
         self.resolve_group_references();
-
-        // Resolve derivations for inline element types AFTER group resolution
-        // This ensures the base types have fully resolved content
         self.resolve_inline_element_type_derivations();
-
-        // Resolve attribute group references
         self.resolve_attribute_group_references();
-
-        // Resolve type references in global elements
         self.resolve_element_types();
-
-        // Resolve element types in complex type content models (forward references)
         self.resolve_element_particle_types();
-
-        // Resolve attribute types in complex types (forward references)
         self.resolve_attribute_types();
-
-        // Refresh global element types with the fully resolved versions from global_maps.types
         self.refresh_element_types();
 
         // Validate redefinitions have proper self-references

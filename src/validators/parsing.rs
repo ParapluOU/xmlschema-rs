@@ -1191,31 +1191,59 @@ fn load_imported_schema(
     expected_namespace: Option<&str>,
     catalog: Option<Arc<XmlCatalog>>,
 ) -> Result<XsdSchema> {
-    // Read the file
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        Error::Resource(format!("Failed to read imported schema '{}': {}", path.display(), e))
-    })?;
+    // Track which files have been loaded to prevent circular includes
+    let mut loaded_files = std::collections::HashSet::new();
 
-    // Parse as document
-    let doc = Document::from_string(&content)?;
-    let root = doc.root().ok_or_else(|| Error::Parse(ParseError::new("Empty imported document")))?;
+    // Parse the root imported schema file
+    let mut imported_schema = parse_single_schema_file(path, catalog.clone())?;
 
-    // Verify this is a schema element
-    if root.local_name() != xsd_elements::SCHEMA {
-        return Err(Error::Parse(ParseError::new(format!(
-            "Expected xs:schema root element in imported schema, got {}",
-            root.local_name()
-        ))));
+    // Mark root as loaded
+    if let Ok(canonical) = path.canonicalize() {
+        loaded_files.insert(canonical);
     }
 
-    // Create a new schema for parsing
-    let mut imported_schema = XsdSchema::new();
-    imported_schema.source.url = Some(path.to_string_lossy().to_string());
-    imported_schema.source.base_url = path.parent().map(|p| p.to_string_lossy().to_string());
-    imported_schema.source.catalog = catalog;
+    // Process pending includes iteratively (same worklist pattern as parse_file_internal).
+    // Without this, imported schemas that use xs:include (e.g., MathML's mathml3.xsd
+    // which includes mathml3-content.xsd, mathml3-presentation.xsd, etc.) would have
+    // 0 elements visible.
+    let mut pending_includes: Vec<String> = imported_schema.pending_include_locations.drain(..).collect();
+    pending_includes.extend(imported_schema.pending_redefine_locations.drain(..));
 
-    // Parse the schema element
-    parse_schema_element(&mut imported_schema, root)?;
+    while let Some(include_location) = pending_includes.pop() {
+        let resolved_path = resolve_schema_location(
+            &include_location,
+            imported_schema.source.base_url.as_deref(),
+            imported_schema.source.catalog.as_ref().map(|c| c.as_ref()),
+        );
+
+        // Skip already-loaded files
+        if let Ok(canonical) = resolved_path.canonicalize() {
+            if loaded_files.contains(&canonical) {
+                continue;
+            }
+            loaded_files.insert(canonical);
+        }
+
+        // Parse the included file (this may discover more pending includes)
+        match parse_single_schema_file(&resolved_path, catalog.clone()) {
+            Ok(include_schema) => {
+                // Queue any nested includes from this file
+                for nested_loc in &include_schema.pending_include_locations {
+                    pending_includes.push(nested_loc.clone());
+                }
+                for nested_loc in &include_schema.pending_redefine_locations {
+                    pending_includes.push(nested_loc.clone());
+                }
+
+                // Merge globals into the root imported schema
+                imported_schema.maps.global_maps.merge(&include_schema.maps.global_maps);
+            }
+            Err(_) => {
+                // Skip includes that fail to load (missing optional files)
+                continue;
+            }
+        }
+    }
 
     // Verify namespace matches if expected
     if let Some(expected_ns) = expected_namespace {
@@ -1229,10 +1257,40 @@ fn load_imported_schema(
         }
     }
 
-    // Build the imported schema
+    // Build the imported schema (after all includes are merged)
     imported_schema.build()?;
 
     Ok(imported_schema)
+}
+
+/// Parse a single schema file without processing includes or building.
+/// Returns the schema with pending_include_locations populated but not processed.
+fn parse_single_schema_file(
+    path: &Path,
+    catalog: Option<Arc<XmlCatalog>>,
+) -> Result<XsdSchema> {
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        Error::Resource(format!("Failed to read schema '{}': {}", path.display(), e))
+    })?;
+
+    let doc = Document::from_string(&content)?;
+    let root = doc.root().ok_or_else(|| Error::Parse(ParseError::new("Empty schema document")))?;
+
+    if root.local_name() != xsd_elements::SCHEMA {
+        return Err(Error::Parse(ParseError::new(format!(
+            "Expected xs:schema root element, got {}",
+            root.local_name()
+        ))));
+    }
+
+    let mut schema = XsdSchema::new();
+    schema.source.url = Some(path.to_string_lossy().to_string());
+    schema.source.base_url = path.parent().map(|p| p.to_string_lossy().to_string());
+    schema.source.catalog = catalog;
+
+    parse_schema_element(&mut schema, root)?;
+
+    Ok(schema)
 }
 
 /// Parse an include declaration
