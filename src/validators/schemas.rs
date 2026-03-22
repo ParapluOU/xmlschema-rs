@@ -760,6 +760,43 @@ impl XsdSchema {
         }
     }
 
+    /// Resolve element types from substitution group heads.
+    ///
+    /// Elements declared with `substitutionGroup="..."` and no explicit type
+    /// inherit their type from the substitution group head element.
+    fn resolve_substitution_group_types(&mut self) {
+        use super::elements::ElementType;
+
+        // Iterate until no more changes (handles multi-level substitution chains)
+        loop {
+            let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
+                .filter_map(|(qname, elem)| {
+                    if !matches!(elem.element_type, ElementType::Any) {
+                        return None;
+                    }
+                    let head_name = elem.substitution_group.as_ref()?;
+                    let head = self.maps.global_maps.elements.get(head_name)?;
+                    match &head.element_type {
+                        ElementType::Any => None,
+                        _ => Some((qname.clone(), head.element_type.clone())),
+                    }
+                })
+                .collect();
+
+            if elements_to_update.is_empty() {
+                break;
+            }
+
+            for (qname, resolved_type) in elements_to_update {
+                if let Some(elem) = self.maps.global_maps.elements.get(&qname) {
+                    let mut new_elem = elem.as_ref().clone();
+                    new_elem.element_type = resolved_type;
+                    self.maps.global_maps.elements.insert(qname, Arc::new(new_elem));
+                }
+            }
+        }
+    }
+
     /// Resolve element types in complex type content models
     ///
     /// This handles forward references where a local element references a type
@@ -1515,6 +1552,7 @@ impl Validator for XsdSchema {
         self.resolve_inline_element_type_derivations();
         self.resolve_attribute_group_references();
         self.resolve_element_types();
+        self.resolve_substitution_group_types();
         self.resolve_element_particle_types();
         self.resolve_attribute_types();
         self.refresh_element_types();
