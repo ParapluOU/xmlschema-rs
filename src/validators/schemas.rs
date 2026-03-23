@@ -730,6 +730,126 @@ impl XsdSchema {
     /// Resolve type references in global elements
     ///
     /// This is called during the build phase to resolve forward type references.
+    /// Resolve attribute references by looking up global attribute declarations.
+    ///
+    /// Attributes created from `<xs:attribute ref="..."/>` in included files may
+    /// have no type because the referenced global attribute wasn't available at
+    /// parse time (the include imports the namespace without schemaLocation).
+    /// At build time, the root schema has all imports loaded, so we can resolve
+    /// these bare ref attributes by looking up their QName in global attributes
+    /// across all schemas.
+    fn resolve_attribute_refs(&mut self) {
+        use super::attributes::XsdAttribute;
+
+        // Collect all global attributes across root + imports for lookup
+        let mut global_attrs: HashMap<QName, Arc<XsdAttribute>> = HashMap::new();
+        for (qn, attr) in &self.maps.global_maps.attributes {
+            global_attrs.insert(qn.clone(), Arc::clone(attr));
+        }
+        for (_ns, import) in &self.imports {
+            if let Some(ref imported) = import.schema {
+                for (qn, attr) in &imported.maps.global_maps.attributes {
+                    global_attrs.entry(qn.clone()).or_insert_with(|| Arc::clone(attr));
+                }
+            }
+        }
+
+        if global_attrs.is_empty() {
+            return;
+        }
+
+        // Helper to resolve a single attribute from the global attrs map.
+        fn resolve_attr(attr: &Arc<XsdAttribute>, global_attrs: &HashMap<QName, Arc<XsdAttribute>>) -> Option<Arc<XsdAttribute>> {
+            if attr.simple_type().is_some() || attr.type_name.is_some() {
+                return None;
+            }
+            let global = global_attrs.get(attr.name())?;
+            if global.simple_type().is_none() && global.type_name.is_none() {
+                return None;
+            }
+            let mut resolved = XsdAttribute::new(attr.name().clone());
+            if let Some(st_arc) = global.simple_type_arc() {
+                resolved.set_type(Arc::clone(st_arc));
+            }
+            if let Some(ref tn) = global.type_name {
+                resolved.type_name = Some(tn.clone());
+            }
+            resolved.set_use(attr.use_mode());
+            if let Some(default) = attr.default() {
+                let _ = resolved.set_default(default.to_string());
+            }
+            Some(Arc::new(resolved))
+        }
+
+        // Phase 1: Resolve in attribute groups
+        let groups_to_update: Vec<_> = self.maps.global_maps.attribute_groups.iter()
+            .filter_map(|(qname, group)| {
+                let any_resolvable = group.iter_attributes()
+                    .any(|attr| resolve_attr(attr, &global_attrs).is_some());
+                if any_resolvable { Some((qname.clone(), Arc::clone(group))) } else { None }
+            })
+            .collect();
+
+        for (qname, group) in groups_to_update {
+            let mut new_group = (*group).clone();
+            let updates: Vec<_> = group.iter_attributes()
+                .filter_map(|attr| resolve_attr(attr, &global_attrs))
+                .collect();
+            for resolved in updates {
+                new_group.set_attribute(resolved);
+            }
+            self.maps.global_maps.attribute_groups.insert(qname, Arc::new(new_group));
+        }
+
+        // Phase 2: Resolve in named complex types
+        let types_to_update: Vec<_> = self.maps.global_maps.types.iter()
+            .filter_map(|(qname, global_type)| {
+                if let GlobalType::Complex(ct) = global_type {
+                    let any_resolvable = ct.attributes.iter_attributes()
+                        .any(|attr| resolve_attr(attr, &global_attrs).is_some());
+                    if any_resolvable { Some((qname.clone(), Arc::clone(ct))) } else { None }
+                } else { None }
+            })
+            .collect();
+
+        for (qname, ct) in types_to_update {
+            let mut new_ct = (*ct).clone();
+            let updates: Vec<_> = ct.attributes.iter_attributes()
+                .filter_map(|attr| resolve_attr(attr, &global_attrs))
+                .collect();
+            for resolved in updates {
+                new_ct.attributes.set_attribute(resolved);
+            }
+            self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
+        }
+
+        // Phase 3: Resolve in element inline complex types
+        let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
+            .filter_map(|(qname, elem)| {
+                if let super::elements::ElementType::Complex(ct) = &elem.element_type {
+                    let any_resolvable = ct.attributes.iter_attributes()
+                        .any(|attr| resolve_attr(attr, &global_attrs).is_some());
+                    if any_resolvable { Some((qname.clone(), Arc::clone(elem))) } else { None }
+                } else { None }
+            })
+            .collect();
+
+        for (qname, elem) in elements_to_update {
+            if let super::elements::ElementType::Complex(ct) = &elem.element_type {
+                let mut new_ct = (**ct).clone();
+                let updates: Vec<_> = ct.attributes.iter_attributes()
+                    .filter_map(|attr| resolve_attr(attr, &global_attrs))
+                    .collect();
+                for resolved in updates {
+                    new_ct.attributes.set_attribute(resolved);
+                }
+                let mut new_elem = (*elem).clone();
+                new_elem.element_type = super::elements::ElementType::Complex(Arc::new(new_ct));
+                self.maps.global_maps.elements.insert(qname, Arc::new(new_elem));
+            }
+        }
+    }
+
     fn resolve_element_types(&mut self) {
         use super::elements::ElementType;
 
@@ -1722,6 +1842,7 @@ impl Validator for XsdSchema {
         self.resolve_complex_type_derivations();
         self.resolve_group_references();
         self.resolve_inline_element_type_derivations();
+        self.resolve_attribute_refs();
         self.resolve_attribute_group_references();
         self.resolve_element_types();
         self.resolve_substitution_group_types();
