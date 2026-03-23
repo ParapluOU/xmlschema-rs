@@ -1842,13 +1842,14 @@ impl Validator for XsdSchema {
         self.resolve_complex_type_derivations();
         self.resolve_group_references();
         self.resolve_inline_element_type_derivations();
-        self.resolve_attribute_refs();
         self.resolve_attribute_group_references();
         self.resolve_element_types();
         self.resolve_substitution_group_types();
         self.resolve_element_particle_types();
         self.resolve_attribute_types();
         self.refresh_element_types();
+        // Run AFTER refresh_element_types to avoid stale type overwrites
+        self.resolve_attribute_refs();
 
         // Validate redefinitions have proper self-references
         self.validate_redefinitions();

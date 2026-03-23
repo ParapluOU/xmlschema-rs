@@ -2,7 +2,7 @@
 //!
 //! This module provides parsing of XSD schema documents into XsdSchema structures.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -1196,7 +1196,22 @@ fn parse_import(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
         if let Some(ref ns) = namespace {
             let resolved_path = resolve_schema_location(loc, schema.base_url(), schema.catalog());
 
-            match load_imported_schema(&resolved_path, Some(ns), schema.source.catalog.clone()) {
+            // Collect global attrs from already-loaded peer imports to pass to
+            // the imported schema (enables cross-import attribute ref resolution)
+            let mut peer_attrs: HashMap<QName, Arc<super::attributes::XsdAttribute>> = HashMap::new();
+            for (_peer_ns, peer_import) in &schema.imports {
+                if let Some(ref peer_schema) = peer_import.schema {
+                    for (qn, attr) in &peer_schema.maps.global_maps.attributes {
+                        peer_attrs.entry(qn.clone()).or_insert_with(|| Arc::clone(attr));
+                    }
+                }
+            }
+            // Also include the current schema's own global attributes
+            for (qn, attr) in &schema.maps.global_maps.attributes {
+                peer_attrs.entry(qn.clone()).or_insert_with(|| Arc::clone(attr));
+            }
+
+            match load_imported_schema(&resolved_path, Some(ns), schema.source.catalog.clone(), &peer_attrs) {
                 Ok(imported_schema) => {
                     // Update the import record with the loaded schema
                     if let Some(import) = schema.imports.get_mut(ns) {
@@ -1218,11 +1233,17 @@ fn parse_import(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
     Ok(())
 }
 
-/// Load and parse an imported schema
+/// Load and parse an imported schema.
+///
+/// `parent_global_attrs` contains global attribute declarations from the parent
+/// schema's already-loaded peer imports. These are injected into the imported
+/// schema's global_maps before build() so that cross-import attribute refs
+/// (like xlink:actuate) can be resolved.
 fn load_imported_schema(
     path: &Path,
     expected_namespace: Option<&str>,
     catalog: Option<Arc<XmlCatalog>>,
+    parent_global_attrs: &HashMap<QName, Arc<super::attributes::XsdAttribute>>,
 ) -> Result<XsdSchema> {
     // Track which files have been loaded to prevent circular includes
     let mut loaded_files = std::collections::HashSet::new();
@@ -1288,6 +1309,15 @@ fn load_imported_schema(
                 expected_ns
             ))));
         }
+    }
+
+    // Inject parent's global attributes so resolve_attribute_refs can resolve
+    // cross-import attribute refs (e.g., xlink:actuate referenced from NISO-STS
+    // elements that import XLink without schemaLocation)
+    for (qn, attr) in parent_global_attrs {
+        imported_schema.maps.global_maps.attributes
+            .entry(qn.clone())
+            .or_insert_with(|| Arc::clone(attr));
     }
 
     // Build the imported schema (after all includes are merged)
