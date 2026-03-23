@@ -760,6 +760,23 @@ impl XsdSchema {
         }
     }
 
+    /// Build the substitution group map from elements that have a substitutionGroup attribute.
+    /// This must run before resolve_substitution_group_types() so that group members are known.
+    fn build_substitution_groups(&mut self) {
+        let entries: Vec<_> = self.maps.global_maps.elements.iter()
+            .filter_map(|(_qname, elem)| {
+                elem.substitution_group.as_ref().map(|head| (head.clone(), Arc::clone(elem)))
+            })
+            .collect();
+
+        for (head, member) in entries {
+            self.maps.substitution_groups
+                .entry(head)
+                .or_default()
+                .push(member);
+        }
+    }
+
     /// Resolve element types from substitution group heads.
     ///
     /// Elements declared with `substitutionGroup="..."` and no explicit type
@@ -1546,6 +1563,9 @@ impl Validator for XsdSchema {
         if self.maps.global_maps.types.is_empty() {
             self.register_builtins()?;
         }
+
+        // Build substitution group map from elements with substitutionGroup attr
+        self.build_substitution_groups();
 
         self.resolve_complex_type_derivations();
         self.resolve_group_references();

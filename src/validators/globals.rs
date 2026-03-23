@@ -259,14 +259,37 @@ impl GlobalMaps {
         self.groups.insert(name, group);
     }
 
-    /// Merge another set of global maps
+    /// Merge another set of global maps.
+    ///
+    /// Prefers existing resolved definitions over incoming unresolved ones.
+    /// For elements: keeps existing entry if it has a resolved type and the
+    /// incoming entry has `ElementType::Any`. This prevents xs:include merges
+    /// from overwriting inline complex types with unresolved forward references.
     pub fn merge(&mut self, other: &GlobalMaps) {
-        self.types.extend(other.types.clone());
+        for (key, value) in other.types.iter() {
+            self.types.entry(key.clone()).or_insert_with(|| value.clone());
+        }
         self.notations.extend(other.notations.clone());
-        self.attributes.extend(other.attributes.clone());
-        self.attribute_groups.extend(other.attribute_groups.clone());
-        self.elements.extend(other.elements.clone());
-        self.groups.extend(other.groups.clone());
+        for (key, value) in other.attributes.iter() {
+            self.attributes.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        for (key, value) in other.attribute_groups.iter() {
+            self.attribute_groups.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+        // For elements: prefer resolved types over Any
+        for (key, value) in other.elements.iter() {
+            match self.elements.get(key) {
+                Some(existing) if !existing.element_type.is_any() && value.element_type.is_any() => {
+                    // Keep existing resolved element
+                }
+                _ => {
+                    self.elements.insert(key.clone(), value.clone());
+                }
+            }
+        }
+        for (key, value) in other.groups.iter() {
+            self.groups.entry(key.clone()).or_insert_with(|| value.clone());
+        }
     }
 
     /// Iterate over all global types
