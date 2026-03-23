@@ -1482,6 +1482,37 @@ impl XsdSchema {
 
             self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
         }
+
+        // Phase 3: Resolve attribute group refs in elements' inline complex types.
+        // Elements with anonymous inline complex types (not in global_maps.types)
+        // also need their attribute group references resolved.
+        let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
+            .filter_map(|(qname, elem)| {
+                if let super::elements::ElementType::Complex(ct) = &elem.element_type {
+                    if ct.attributes.has_pending_refs() {
+                        return Some((qname.clone(), Arc::clone(elem)));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for (qname, elem) in elements_to_update {
+            if let super::elements::ElementType::Complex(ct) = &elem.element_type {
+                let mut new_ct = (**ct).clone();
+                for ref_qname in new_ct.attributes.pending_group_refs().to_vec() {
+                    if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
+                        for attr in referenced_group.iter_attributes() {
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                        }
+                    }
+                }
+                new_ct.attributes.clear_pending_refs();
+                let mut new_elem = (*elem).clone();
+                new_elem.element_type = super::elements::ElementType::Complex(Arc::new(new_ct));
+                self.maps.global_maps.elements.insert(qname, Arc::new(new_elem));
+            }
+        }
     }
 
     /// Validate that redefined components have proper self-references
