@@ -1001,6 +1001,57 @@ impl XsdSchema {
                 self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
             }
         }
+
+        // Phase 2: Resolve attribute types in element inline complex types
+        let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
+            .filter_map(|(qname, elem)| {
+                if let super::elements::ElementType::Complex(ct) = &elem.element_type {
+                    let has_unresolved = ct.attributes.iter_attributes()
+                        .any(|attr| attr.type_name.is_some() && attr.simple_type().is_none());
+                    if has_unresolved {
+                        return Some((qname.clone(), Arc::clone(elem)));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for (qname, elem) in elements_to_update {
+            if let super::elements::ElementType::Complex(ct) = &elem.element_type {
+                let mut new_ct = (**ct).clone();
+                let attrs_to_update: Vec<_> = new_ct.attributes.iter_attributes()
+                    .filter_map(|attr| {
+                        if let Some(ref type_name) = attr.type_name {
+                            if attr.simple_type().is_none() {
+                                if let Some(GlobalType::Simple(st)) = self.maps.global_maps.types.get(type_name) {
+                                    let mut new_attr = XsdAttribute::new(attr.name().clone());
+                                    new_attr.type_name = Some(type_name.clone());
+                                    new_attr.set_type(Arc::clone(st));
+                                    new_attr.set_use(attr.use_mode());
+                                    if let Some(default) = attr.default() {
+                                        let _ = new_attr.set_default(default.to_string());
+                                    }
+                                    if let Some(fixed) = attr.fixed_value() {
+                                        let _ = new_attr.set_fixed(fixed.to_string());
+                                    }
+                                    return Some(Arc::new(new_attr));
+                                }
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+
+                if !attrs_to_update.is_empty() {
+                    for new_attr in attrs_to_update {
+                        new_ct.attributes.set_attribute(new_attr);
+                    }
+                    let mut new_elem = (*elem).clone();
+                    new_elem.element_type = super::elements::ElementType::Complex(Arc::new(new_ct));
+                    self.maps.global_maps.elements.insert(qname, Arc::new(new_elem));
+                }
+            }
+        }
     }
 
     /// Refresh global element types with the fully resolved versions
@@ -1455,6 +1506,58 @@ impl XsdSchema {
             }
         }
 
+        // Resolve attribute types in attribute groups (before copying into types/elements).
+        // Attributes in groups may have unresolved type_name references that need to be
+        // matched against global simple types.
+        {
+            use super::attributes::XsdAttribute;
+            use super::base::AttributeValidator;
+            let groups_to_update: Vec<_> = self.maps.global_maps.attribute_groups.iter()
+                .filter_map(|(qname, group)| {
+                    let has_unresolved = group.iter_attributes()
+                        .any(|attr| attr.type_name.is_some() && attr.simple_type().is_none());
+                    if has_unresolved {
+                        Some((qname.clone(), Arc::clone(group)))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for (qname, group) in groups_to_update {
+                let mut new_group = (*group).clone();
+                let attrs_to_update: Vec<_> = new_group.iter_attributes()
+                    .filter_map(|attr| {
+                        if let Some(ref type_name) = attr.type_name {
+                            if attr.simple_type().is_none() {
+                                if let Some(GlobalType::Simple(st)) = self.maps.global_maps.types.get(type_name) {
+                                    let mut new_attr = XsdAttribute::new(attr.name().clone());
+                                    new_attr.type_name = Some(type_name.clone());
+                                    new_attr.set_type(Arc::clone(st));
+                                    new_attr.set_use(attr.use_mode());
+                                    if let Some(default) = attr.default() {
+                                        let _ = new_attr.set_default(default.to_string());
+                                    }
+                                    if let Some(fixed) = attr.fixed_value() {
+                                        let _ = new_attr.set_fixed(fixed.to_string());
+                                    }
+                                    return Some(Arc::new(new_attr));
+                                }
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+
+                if !attrs_to_update.is_empty() {
+                    for new_attr in attrs_to_update {
+                        new_group.set_attribute(new_attr);
+                    }
+                    self.maps.global_maps.attribute_groups.insert(qname, Arc::new(new_group));
+                }
+            }
+        }
+
         // Then, resolve references in complex types' attribute groups
         let types_to_update: Vec<_> = self.maps.global_maps.types.iter()
             .filter_map(|(qname, global_type)| {
@@ -1484,33 +1587,50 @@ impl XsdSchema {
         }
 
         // Phase 3: Resolve attribute group refs in elements' inline complex types.
-        // Elements with anonymous inline complex types (not in global_maps.types)
-        // also need their attribute group references resolved.
-        let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
-            .filter_map(|(qname, elem)| {
-                if let super::elements::ElementType::Complex(ct) = &elem.element_type {
-                    if ct.attributes.has_pending_refs() {
-                        return Some((qname.clone(), Arc::clone(elem)));
-                    }
-                }
-                None
-            })
-            .collect();
-
-        for (qname, elem) in elements_to_update {
-            if let super::elements::ElementType::Complex(ct) = &elem.element_type {
-                let mut new_ct = (**ct).clone();
-                for ref_qname in new_ct.attributes.pending_group_refs().to_vec() {
-                    if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
-                        for attr in referenced_group.iter_attributes() {
-                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+        // Also resolve attribute types (type_name → simple_type) during the copy,
+        // since attributes from groups may have unresolved types when accessed
+        // through the import boundary.
+        {
+            use super::attributes::XsdAttribute;
+            let elements_to_update: Vec<_> = self.maps.global_maps.elements.iter()
+                .filter_map(|(qname, elem)| {
+                    if let super::elements::ElementType::Complex(ct) = &elem.element_type {
+                        if ct.attributes.has_pending_refs() {
+                            return Some((qname.clone(), Arc::clone(elem)));
                         }
                     }
+                    None
+                })
+                .collect();
+
+            for (qname, elem) in elements_to_update {
+                if let super::elements::ElementType::Complex(ct) = &elem.element_type {
+                    let mut new_ct = (**ct).clone();
+                    for ref_qname in new_ct.attributes.pending_group_refs().to_vec() {
+                        if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
+                            for attr in referenced_group.iter_attributes() {
+                                // If attr has type_name but no resolved type, resolve it now
+                                if attr.type_name.is_some() && attr.simple_type().is_none() {
+                                    if let Some(ref type_name) = attr.type_name {
+                                        if let Some(GlobalType::Simple(st)) = self.maps.global_maps.types.get(type_name) {
+                                            let mut resolved_attr = XsdAttribute::new(attr.name().clone());
+                                            resolved_attr.type_name = Some(type_name.clone());
+                                            resolved_attr.set_type(Arc::clone(st));
+                                            resolved_attr.set_use(attr.use_mode());
+                                            let _ = new_ct.attributes.add_attribute(Arc::new(resolved_attr));
+                                            continue;
+                                        }
+                                    }
+                                }
+                                let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                            }
+                        }
+                    }
+                    new_ct.attributes.clear_pending_refs();
+                    let mut new_elem = (*elem).clone();
+                    new_elem.element_type = super::elements::ElementType::Complex(Arc::new(new_ct));
+                    self.maps.global_maps.elements.insert(qname, Arc::new(new_elem));
                 }
-                new_ct.attributes.clear_pending_refs();
-                let mut new_elem = (*elem).clone();
-                new_elem.element_type = super::elements::ElementType::Complex(Arc::new(new_ct));
-                self.maps.global_maps.elements.insert(qname, Arc::new(new_elem));
             }
         }
     }
