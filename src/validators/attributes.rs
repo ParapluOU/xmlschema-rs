@@ -262,6 +262,11 @@ impl XsdAttribute {
         self.attr_type.as_ref().map(|t| t.as_ref())
     }
 
+    /// Get the simple type as Arc (for cloning/sharing)
+    pub fn simple_type_arc(&self) -> Option<&Arc<dyn SimpleType + Send + Sync>> {
+        self.attr_type.as_ref()
+    }
+
     /// Get the value constraint (fixed or default)
     pub fn value_constraint(&self) -> Option<&str> {
         self.fixed.as_deref().or(self.default.as_deref())

@@ -1586,6 +1586,7 @@ impl XsdSchema {
             self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
         }
 
+
         // Phase 3: Resolve attribute group refs in elements' inline complex types.
         // Also resolve attribute types (type_name → simple_type) during the copy,
         // since attributes from groups may have unresolved types when accessed

@@ -1072,7 +1072,40 @@ fn parse_global_attribute(schema: &mut XsdSchema, elem: &Element) -> Result<()> 
     })?;
 
     let qname = make_qname(schema, name);
-    let attr = XsdAttribute::new(qname.clone());
+    let mut attr = XsdAttribute::new(qname.clone());
+
+    // Parse type reference (same logic as parse_attribute_decl)
+    if let Some(type_str) = elem.get_attribute(xsd_attrs::TYPE) {
+        let (type_ns, type_local) = schema.resolve_qname(type_str);
+        if let Some(builtin_name) = resolve_builtin_name(&type_local) {
+            if let Ok(simple_type) = XsdAtomicType::new(builtin_name) {
+                attr.set_type(Arc::new(simple_type));
+            } else {
+                attr.type_name = Some(QName::new(type_ns.map(|s| s.to_string()), type_local.to_string()));
+            }
+        } else {
+            let type_qname = QName::new(type_ns.map(|s| s.to_string()), type_local);
+            if let Some(global_type) = schema.maps.global_maps.types.get(&type_qname) {
+                if let GlobalType::Simple(st) = global_type {
+                    attr.set_type(Arc::clone(st));
+                }
+            } else {
+                attr.type_name = Some(type_qname);
+            }
+        }
+    }
+
+    // Parse inline simpleType child
+    if attr.simple_type().is_none() && attr.type_name.is_none() {
+        for child in &elem.children {
+            if child.local_name() == xsd_elements::SIMPLE_TYPE {
+                if let Some(st) = parse_inline_simple_type(schema, child) {
+                    attr.set_type(Arc::new(st));
+                }
+                break;
+            }
+        }
+    }
 
     schema.maps.global_maps.attributes.insert(qname, Arc::new(attr));
 
@@ -1775,10 +1808,30 @@ fn parse_attribute_decl(schema: &XsdSchema, elem: &Element) -> Option<XsdAttribu
     if let Some(ref_str) = elem.get_attribute(xsd_attrs::REF) {
         let (ref_ns, ref_local) = schema.resolve_qname(ref_str);
         let ref_qname = QName::new(ref_ns.map(|s| s.to_string()), ref_local);
-        // Create attribute with ref name
-        let mut attr = XsdAttribute::new(ref_qname);
 
-        // Parse use attribute
+        // Try to resolve the referenced global attribute to copy its type
+        let mut attr = XsdAttribute::new(ref_qname.clone());
+        let global_attr = schema.maps.global_maps.attributes.get(&ref_qname)
+            .or_else(|| {
+                for (_ns, import) in &schema.imports {
+                    if let Some(ref imported) = import.schema {
+                        if let Some(ga) = imported.maps.global_maps.attributes.get(&ref_qname) {
+                            return Some(ga);
+                        }
+                    }
+                }
+                None
+            });
+        if let Some(global) = global_attr {
+            if let Some(st_arc) = global.simple_type_arc() {
+                attr.set_type(Arc::clone(st_arc));
+            }
+            if let Some(ref tn) = global.type_name {
+                attr.type_name = Some(tn.clone());
+            }
+        };
+
+        // Parse use attribute (override from the reference context)
         if let Some(use_str) = elem.get_attribute(xsd_attrs::USE) {
             if let Ok(use_mode) = AttributeUse::from_str(use_str) {
                 attr.set_use(use_mode);
