@@ -1802,6 +1802,11 @@ fn parse_attribute_decl(schema: &XsdSchema, elem: &Element) -> Option<XsdAttribu
         if let Some(builtin_name) = resolve_builtin_name(&type_local) {
             if let Ok(simple_type) = XsdAtomicType::new(builtin_name) {
                 attr.set_type(Arc::new(simple_type));
+            } else {
+                // Builtin recognized but not an atomic type (e.g., NMTOKENS, IDREFS)
+                // Store as type_name for the compiler to handle
+                let type_qname = QName::new(type_ns.map(|s| s.to_string()), type_local.to_string());
+                attr.type_name = Some(type_qname);
             }
         } else {
             // Look up user-defined simple type
@@ -1813,6 +1818,18 @@ fn parse_attribute_decl(schema: &XsdSchema, elem: &Element) -> Option<XsdAttribu
             } else {
                 // Type not yet parsed - store reference for forward resolution
                 attr.type_name = Some(type_qname);
+            }
+        }
+    }
+
+    // If no type= attribute, look for inline simpleType child
+    if attr.simple_type().is_none() && attr.type_name.is_none() {
+        for child in &elem.children {
+            if child.local_name() == xsd_elements::SIMPLE_TYPE {
+                if let Some(st) = parse_inline_simple_type(schema, child) {
+                    attr.set_type(Arc::new(st));
+                }
+                break;
             }
         }
     }
