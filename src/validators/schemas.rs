@@ -1297,7 +1297,7 @@ impl XsdSchema {
                     for attr in base_ct.attributes.iter_attributes() {
                         // Only add if not already defined (extension can override)
                         if new_ct.attributes.get_attribute(attr.name()).is_none() {
-                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                            new_ct.attributes.set_attribute(Arc::clone(attr));
                         }
                     }
                 }
@@ -1320,7 +1320,7 @@ impl XsdSchema {
                     // For restriction, inherit base attributes (derived type can narrow them)
                     for attr in base_ct.attributes.iter_attributes() {
                         if new_ct.attributes.get_attribute(attr.name()).is_none() {
-                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                            new_ct.attributes.set_attribute(Arc::clone(attr));
                         }
                     }
                 }
@@ -1393,7 +1393,7 @@ impl XsdSchema {
                     // Inherit attributes from base type
                     for attr in base_ct.attributes.iter_attributes() {
                         if new_ct.attributes.get_attribute(attr.name()).is_none() {
-                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                            new_ct.attributes.set_attribute(Arc::clone(attr));
                         }
                     }
                 }
@@ -1415,7 +1415,7 @@ impl XsdSchema {
                     // For restriction, inherit base attributes
                     for attr in base_ct.attributes.iter_attributes() {
                         if new_ct.attributes.get_attribute(attr.name()).is_none() {
-                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                            new_ct.attributes.set_attribute(Arc::clone(attr));
                         }
                     }
                 }
@@ -1471,7 +1471,7 @@ impl XsdSchema {
                         if let Some(ref original) = redefine_ref {
                             // Self-reference in redefinition - use the original
                             for attr in original.iter_attributes() {
-                                let _ = group.add_attribute(Arc::clone(attr));
+                                group.set_attribute(Arc::clone(attr));
                             }
                             continue;
                         }
@@ -1482,7 +1482,7 @@ impl XsdSchema {
                         // (no pending refs), otherwise we'll get them in a later iteration
                         if !referenced_group.has_pending_refs() {
                             for attr in referenced_group.iter_attributes() {
-                                let _ = group.add_attribute(Arc::clone(attr));
+                                group.set_attribute(Arc::clone(attr));
                             }
                         }
                     }
@@ -1577,7 +1577,7 @@ impl XsdSchema {
                 if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
                     // Add the referenced attributes to this complex type
                     for attr in referenced_group.iter_attributes() {
-                        let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                        new_ct.attributes.set_attribute(Arc::clone(attr));
                     }
                 }
             }
@@ -1617,12 +1617,12 @@ impl XsdSchema {
                                             resolved_attr.type_name = Some(type_name.clone());
                                             resolved_attr.set_type(Arc::clone(st));
                                             resolved_attr.set_use(attr.use_mode());
-                                            let _ = new_ct.attributes.add_attribute(Arc::new(resolved_attr));
+                                            new_ct.attributes.set_attribute(Arc::new(resolved_attr));
                                             continue;
                                         }
                                     }
                                 }
-                                let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
+                                new_ct.attributes.set_attribute(Arc::clone(attr));
                             }
                         }
                     }
