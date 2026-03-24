@@ -15,7 +15,7 @@ use super::globals::GlobalType;
 use super::groups::{ElementParticle, GroupParticle, ModelType, XsdGroup};
 use super::particles::Occurs;
 use super::schemas::{DerivationDefault, FormDefault, RedefinedComponent, SchemaRedefine, XsdSchema};
-use super::simple_types::{XsdAtomicType, XsdListType, XsdRestrictedType, XsdUnionType};
+use super::simple_types::{SimpleType, XsdAtomicType, XsdListType, XsdRestrictedType, XsdUnionType};
 use super::builtins::XSD_NAMESPACE;
 use super::wildcards::{NamespaceConstraint, ProcessContents, XsdAnyAttribute, XsdAnyElement};
 
@@ -528,7 +528,7 @@ fn parse_global_element(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
                 xsd_elements::SIMPLE_TYPE => {
                     // Parse inline simple type
                     if let Some(st) = parse_inline_simple_type(schema, child) {
-                        inline_type = Some(ElementType::Simple(Arc::new(st)));
+                        inline_type = Some(ElementType::Simple(st));
                     }
                     break;
                 }
@@ -663,7 +663,71 @@ fn parse_inline_complex_type(schema: &XsdSchema, elem: &Element) -> Option<XsdCo
 }
 
 /// Parse an inline (anonymous) simple type
-fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<XsdAtomicType> {
+fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dyn SimpleType + Send + Sync>> {
+    // Look for union
+    for child in &elem.children {
+        if child.local_name() == "union" {
+            let mut member_types: Vec<Arc<dyn SimpleType + Send + Sync>> = Vec::new();
+
+            // Parse memberTypes attribute (references to named types)
+            if let Some(member_types_str) = child.get_attribute("memberTypes") {
+                for type_ref in member_types_str.split_whitespace() {
+                    let (_type_ns, type_local) = schema.resolve_qname(type_ref);
+                    if let Some(builtin_name) = resolve_builtin_name(&type_local) {
+                        if let Ok(st) = XsdAtomicType::new(builtin_name) {
+                            member_types.push(Arc::new(st));
+                        }
+                    } else {
+                        let type_qname = QName::new(_type_ns.map(|s| s.to_string()), type_local);
+                        if let Some(GlobalType::Simple(st)) = schema.maps.global_maps.types.get(&type_qname) {
+                            member_types.push(Arc::clone(st));
+                        }
+                    }
+                }
+            }
+
+            // Parse inline simpleType children
+            for union_child in &child.children {
+                if union_child.local_name() == xsd_elements::SIMPLE_TYPE {
+                    if let Some(st) = parse_inline_simple_type(schema, union_child) {
+                        member_types.push(st);
+                    }
+                }
+            }
+
+            if !member_types.is_empty() {
+                return Some(Arc::new(super::simple_types::XsdUnionType::new(member_types)));
+            }
+        }
+    }
+
+    // Look for list
+    for child in &elem.children {
+        if child.local_name() == "list" {
+            if let Some(item_type_str) = child.get_attribute("itemType") {
+                let (_type_ns, type_local) = schema.resolve_qname(item_type_str);
+                if let Some(builtin_name) = resolve_builtin_name(&type_local) {
+                    if let Ok(item_type) = XsdAtomicType::new(builtin_name) {
+                        return Some(Arc::new(super::simple_types::XsdListType::new(Arc::new(item_type))));
+                    }
+                } else {
+                    let type_qname = QName::new(_type_ns.map(|s| s.to_string()), type_local);
+                    if let Some(GlobalType::Simple(st)) = schema.maps.global_maps.types.get(&type_qname) {
+                        return Some(Arc::new(super::simple_types::XsdListType::new(Arc::clone(st))));
+                    }
+                }
+            }
+            // Check for inline simpleType child
+            for list_child in &child.children {
+                if list_child.local_name() == xsd_elements::SIMPLE_TYPE {
+                    if let Some(item_st) = parse_inline_simple_type(schema, list_child) {
+                        return Some(Arc::new(super::simple_types::XsdListType::new(item_st)));
+                    }
+                }
+            }
+        }
+    }
+
     // Look for restriction
     for child in &elem.children {
         if child.local_name() == xsd_elements::RESTRICTION {
@@ -737,12 +801,12 @@ fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<XsdAto
                 atomic = atomic.with_length(len);
             }
 
-            return Some(atomic);
+            return Some(Arc::new(atomic));
         }
     }
 
     // Default to string if no restriction found
-    XsdAtomicType::new("string").ok()
+    XsdAtomicType::new("string").ok().map(|st| Arc::new(st) as Arc<dyn SimpleType + Send + Sync>)
 }
 
 /// Parse a global complex type definition
@@ -1100,7 +1164,7 @@ fn parse_global_attribute(schema: &mut XsdSchema, elem: &Element) -> Result<()> 
         for child in &elem.children {
             if child.local_name() == xsd_elements::SIMPLE_TYPE {
                 if let Some(st) = parse_inline_simple_type(schema, child) {
-                    attr.set_type(Arc::new(st));
+                    attr.set_type(st);
                 }
                 break;
             }
@@ -1724,7 +1788,7 @@ fn parse_element_particle(schema: &XsdSchema, elem: &Element) -> Option<ElementP
                     }
                     xsd_elements::SIMPLE_TYPE => {
                         if let Some(st) = parse_inline_simple_type(schema, child) {
-                            inline_type = Some(ElementType::Simple(Arc::new(st)));
+                            inline_type = Some(ElementType::Simple(st));
                         }
                         break;
                     }
@@ -1910,7 +1974,7 @@ fn parse_attribute_decl(schema: &XsdSchema, elem: &Element) -> Option<XsdAttribu
         for child in &elem.children {
             if child.local_name() == xsd_elements::SIMPLE_TYPE {
                 if let Some(st) = parse_inline_simple_type(schema, child) {
-                    attr.set_type(Arc::new(st));
+                    attr.set_type(st);
                 }
                 break;
             }
