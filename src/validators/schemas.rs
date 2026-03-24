@@ -1417,7 +1417,7 @@ impl XsdSchema {
                     for attr in base_ct.attributes.iter_attributes() {
                         // Only add if not already defined (extension can override)
                         if new_ct.attributes.get_attribute(attr.name()).is_none() {
-                            new_ct.attributes.set_attribute(Arc::clone(attr));
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
                         }
                     }
                 }
@@ -1440,7 +1440,7 @@ impl XsdSchema {
                     // For restriction, inherit base attributes (derived type can narrow them)
                     for attr in base_ct.attributes.iter_attributes() {
                         if new_ct.attributes.get_attribute(attr.name()).is_none() {
-                            new_ct.attributes.set_attribute(Arc::clone(attr));
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
                         }
                     }
                 }
@@ -1513,7 +1513,7 @@ impl XsdSchema {
                     // Inherit attributes from base type
                     for attr in base_ct.attributes.iter_attributes() {
                         if new_ct.attributes.get_attribute(attr.name()).is_none() {
-                            new_ct.attributes.set_attribute(Arc::clone(attr));
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
                         }
                     }
                 }
@@ -1535,7 +1535,7 @@ impl XsdSchema {
                     // For restriction, inherit base attributes
                     for attr in base_ct.attributes.iter_attributes() {
                         if new_ct.attributes.get_attribute(attr.name()).is_none() {
-                            new_ct.attributes.set_attribute(Arc::clone(attr));
+                            let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
                         }
                     }
                 }
@@ -1598,11 +1598,9 @@ impl XsdSchema {
                     }
                     // Otherwise look up in global maps
                     if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
-                        // Only add attributes if the referenced group has been fully resolved
-                        // (no pending refs), otherwise we'll get them in a later iteration
                         if !referenced_group.has_pending_refs() {
                             for attr in referenced_group.iter_attributes() {
-                                group.set_attribute(Arc::clone(attr));
+                                let _ = group.add_attribute(Arc::clone(attr));
                             }
                         }
                     }
@@ -1697,7 +1695,7 @@ impl XsdSchema {
                 if let Some(referenced_group) = self.maps.global_maps.attribute_groups.get(&ref_qname) {
                     // Add the referenced attributes to this complex type
                     for attr in referenced_group.iter_attributes() {
-                        new_ct.attributes.set_attribute(Arc::clone(attr));
+                        let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
                     }
                 }
             }
@@ -1743,7 +1741,7 @@ impl XsdSchema {
                                         }
                                     }
                                 }
-                                new_ct.attributes.set_attribute(Arc::clone(attr));
+                                let _ = new_ct.attributes.add_attribute(Arc::clone(attr));
                             }
                         }
                     }
@@ -1842,13 +1840,14 @@ impl Validator for XsdSchema {
         self.resolve_complex_type_derivations();
         self.resolve_group_references();
         self.resolve_inline_element_type_derivations();
+        self.resolve_attribute_refs();
         self.resolve_attribute_group_references();
         self.resolve_element_types();
         self.resolve_substitution_group_types();
         self.resolve_element_particle_types();
         self.resolve_attribute_types();
         self.refresh_element_types();
-        // Run AFTER refresh_element_types to avoid stale type overwrites
+        // Run again after refresh to catch attrs that were overwritten
         self.resolve_attribute_refs();
 
         // Validate redefinitions have proper self-references
