@@ -1226,11 +1226,15 @@ impl XsdSchema {
             })
             .collect();
 
-        // Resolve group references in each type
+        // Resolve group references in each type, preserving original content
         for (qname, ct) in types_to_update {
             if let ComplexContent::Group(group) = &ct.content {
                 if let Some(resolved_group) = self.resolve_group_ref_recursive(group) {
                     let mut new_ct = (*ct).clone();
+                    // Save original unresolved content for the Fonto compiler
+                    if new_ct.original_content.is_none() {
+                        new_ct.original_content = Some(new_ct.content.clone());
+                    }
                     new_ct.content = ComplexContent::Group(Arc::new(resolved_group));
                     self.maps.global_maps.types.insert(qname, GlobalType::Complex(Arc::new(new_ct)));
                 }

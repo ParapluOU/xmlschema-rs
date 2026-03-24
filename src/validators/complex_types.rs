@@ -236,6 +236,11 @@ pub struct XsdComplexType {
     /// Back-reference to original type when this is a redefinition (xs:redefine)
     pub redefine: Option<Arc<XsdComplexType>>,
 
+    /// Original content before group reference resolution.
+    /// Used by the Fonto schema compiler to build content models from the
+    /// unresolved group structure (matching FDT's output).
+    pub original_content: Option<ComplexContent>,
+
     /// Parse errors
     errors: Vec<ParseError>,
 }
@@ -255,6 +260,7 @@ impl XsdComplexType {
             final_deriv: DerivationFlags::default(),
             open_content: None,
             redefine: None,
+            original_content: None,
             errors: Vec::new(),
         }
     }
@@ -273,6 +279,7 @@ impl XsdComplexType {
             final_deriv: DerivationFlags::default(),
             open_content: None,
             redefine: None,
+            original_content: None,
             errors: Vec::new(),
         }
     }
@@ -291,6 +298,7 @@ impl XsdComplexType {
             final_deriv: DerivationFlags::default(),
             open_content: None,
             redefine: None,
+            original_content: None,
             errors: Vec::new(),
         }
     }
@@ -547,6 +555,7 @@ impl ComplexTypeBuilder {
             final_deriv: self.final_deriv,
             open_content: self.open_content,
             redefine: None,
+            original_content: None,
             errors: Vec::new(),
         }
     }
