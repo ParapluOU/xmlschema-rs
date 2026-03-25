@@ -1301,7 +1301,16 @@ impl XsdSchema {
             // Check if we've already visited this group to prevent infinite recursion
             // (but only for non-self-references)
             if visited.contains(ref_name) {
-                // Already visited - just return the group as-is without further resolution
+                // Already visited — look up the referenced group and return its content
+                // WITHOUT further recursive resolution. This handles duplicate group refs
+                // (e.g., ContExp appearing twice in apply.content) without losing content.
+                if let Some(referenced_group) = self.maps.global_maps.groups.get(ref_name) {
+                    let mut resolved = (**referenced_group).clone();
+                    resolved.occurs = group.occurs;
+                    resolved.group_ref = None;
+                    return Some(resolved);
+                }
+                // Fallback: return the group as-is
                 let mut resolved = group.clone();
                 resolved.group_ref = None;
                 return Some(resolved);
