@@ -712,7 +712,19 @@ fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dy
                     }
                 } else {
                     let type_qname = QName::new(_type_ns.map(|s| s.to_string()), type_local);
-                    if let Some(GlobalType::Simple(st)) = schema.maps.global_maps.types.get(&type_qname) {
+                    // Search current schema and imports for the type
+                    let found_type = schema.maps.global_maps.types.get(&type_qname)
+                        .or_else(|| {
+                            for (_ns, import) in &schema.imports {
+                                if let Some(ref imported) = import.schema {
+                                    if let Some(t) = imported.maps.global_maps.types.get(&type_qname) {
+                                        return Some(t);
+                                    }
+                                }
+                            }
+                            None
+                        });
+                    if let Some(GlobalType::Simple(st)) = found_type {
                         return Some(Arc::new(super::simple_types::XsdListType::new(Arc::clone(st))));
                     }
                 }
