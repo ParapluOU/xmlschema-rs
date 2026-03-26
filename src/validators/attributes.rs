@@ -267,6 +267,11 @@ impl XsdAttribute {
         self.attr_type.as_ref()
     }
 
+    /// Get the fixed value
+    pub fn fixed(&self) -> Option<&str> {
+        self.fixed.as_deref()
+    }
+
     /// Get the value constraint (fixed or default)
     pub fn value_constraint(&self) -> Option<&str> {
         self.fixed.as_deref().or(self.default.as_deref())
