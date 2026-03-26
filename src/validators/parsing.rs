@@ -864,7 +864,35 @@ fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dy
                     .find(|c| c.local_name() == xsd_elements::SIMPLE_TYPE)
                     .and_then(|nested| parse_inline_simple_type(schema, nested));
                 if let Some(base_type) = nested_base {
-                    return Some(base_type);
+                    // Wrap the nested type in a restriction with applicable facets
+                    let mut restricted = super::simple_types::XsdRestrictedType::new(base_type);
+                    for facet_child in &child.children {
+                        match facet_child.local_name() {
+                            xsd_elements::MIN_LENGTH => {
+                                if let Some(v) = facet_child.get_attribute(xsd_attrs::VALUE) {
+                                    if let Ok(n) = v.parse() {
+                                        restricted = restricted.with_min_length(n);
+                                    }
+                                }
+                            }
+                            xsd_elements::MAX_LENGTH => {
+                                if let Some(v) = facet_child.get_attribute(xsd_attrs::VALUE) {
+                                    if let Ok(n) = v.parse() {
+                                        restricted = restricted.with_max_length(n);
+                                    }
+                                }
+                            }
+                            xsd_elements::LENGTH => {
+                                if let Some(v) = facet_child.get_attribute(xsd_attrs::VALUE) {
+                                    if let Ok(n) = v.parse() {
+                                        restricted = restricted.with_length(n);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    return Some(Arc::new(restricted));
                 }
                 // Fallback: default to string with facets
                 let mut atomic = match XsdAtomicType::new("string") {
