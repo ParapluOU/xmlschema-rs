@@ -1935,6 +1935,15 @@ fn parse_attribute_decl(schema: &XsdSchema, elem: &Element) -> Option<XsdAttribu
             }
         }
 
+        // Parse default/fixed overrides from the reference element
+        // (attribute-use-level values, e.g., <xs:attribute ref="xml:lang" default="en"/>)
+        if let Some(default) = elem.get_attribute(xsd_attrs::DEFAULT) {
+            let _ = attr.set_default(default.to_string());
+        }
+        if let Some(fixed) = elem.get_attribute(xsd_attrs::FIXED) {
+            let _ = attr.set_fixed(fixed.to_string());
+        }
+
         return Some(attr);
     }
 
