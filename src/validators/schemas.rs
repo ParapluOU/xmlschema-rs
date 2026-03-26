@@ -562,7 +562,13 @@ impl XsdSchema {
         if let Some(colon_pos) = qname.find(':') {
             let prefix = &qname[..colon_pos];
             let local_name = &qname[colon_pos + 1..];
-            let namespace = self.source.namespaces.get(prefix).map(|s| s.as_str());
+            let namespace = self.source.namespaces.get(prefix).map(|s| s.as_str())
+                // Built-in XML namespace prefix (always available per XML spec)
+                .or_else(|| if prefix == "xml" {
+                    Some("http://www.w3.org/XML/1998/namespace")
+                } else {
+                    None
+                });
             (namespace, local_name)
         } else {
             (self.target_namespace.as_deref(), qname)
@@ -767,7 +773,14 @@ impl XsdSchema {
             if global.simple_type().is_none() && global.type_name.is_none() {
                 return None;
             }
-            let mut resolved = XsdAttribute::new(attr.name().clone());
+            // Use the global attr's name (with namespace) — ref= attributes
+            // may have lost their namespace during parsing
+            let resolved_name = if attr.name().namespace.is_none() && global.name().namespace.is_some() {
+                global.name().clone()
+            } else {
+                attr.name().clone()
+            };
+            let mut resolved = XsdAttribute::new(resolved_name);
             if let Some(st_arc) = global.simple_type_arc() {
                 resolved.set_type(Arc::clone(st_arc));
             }
@@ -777,6 +790,9 @@ impl XsdSchema {
             resolved.set_use(attr.use_mode());
             if let Some(default) = attr.default() {
                 let _ = resolved.set_default(default.to_string());
+            }
+            if let Some(fixed) = attr.fixed() {
+                let _ = resolved.set_fixed(fixed.to_string());
             }
             Some(Arc::new(resolved))
         }
@@ -1749,6 +1765,12 @@ impl XsdSchema {
                                             resolved_attr.type_name = Some(type_name.clone());
                                             resolved_attr.set_type(Arc::clone(st));
                                             resolved_attr.set_use(attr.use_mode());
+                                            if let Some(default) = attr.default() {
+                                                let _ = resolved_attr.set_default(default.to_string());
+                                            }
+                                            if let Some(fixed) = attr.fixed() {
+                                                let _ = resolved_attr.set_fixed(fixed.to_string());
+                                            }
                                             new_ct.attributes.set_attribute(Arc::new(resolved_attr));
                                             continue;
                                         }
