@@ -1799,6 +1799,9 @@ fn parse_element_particle(schema: &XsdSchema, elem: &Element) -> Option<ElementP
         };
 
         let mut xsd_element = XsdElement::new(qname.clone(), element_type);
+        // Inline element declarations within groups/complex types are locally scoped
+        // (top-level xs:element declarations go through parse_global_element() instead)
+        xsd_element.scope = super::elements::ElementScope::Local;
         // Store type reference for forward reference resolution
         xsd_element.type_name = type_name_ref;
 
