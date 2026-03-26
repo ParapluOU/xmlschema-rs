@@ -796,6 +796,12 @@ fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dy
                     if let Some(GlobalType::Simple(st)) = found_type {
                         return Some(Arc::new(super::simple_types::XsdListType::new(Arc::clone(st))));
                     }
+                    // Type not found — create list with placeholder item type and store
+                    // the unresolved name for post-include resolution
+                    let placeholder = XsdAtomicType::new("token").unwrap_or_else(|_| XsdAtomicType::new("string").unwrap());
+                    let mut list = super::simple_types::XsdListType::new(Arc::new(placeholder));
+                    list.unresolved_item_type_name = Some(type_qname);
+                    return Some(Arc::new(list));
                 }
             }
             // Check for inline simpleType child

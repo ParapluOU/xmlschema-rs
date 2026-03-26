@@ -160,9 +160,13 @@ pub trait SimpleType: TypeValidator {
     }
 
     /// For Union types: get unresolved member type names (couldn't be resolved at parse time)
-    /// These need post-include resolution
     fn unresolved_member_names(&self) -> &[crate::namespaces::QName] {
         &[]
+    }
+
+    /// For List types: get unresolved item type name (couldn't be resolved at parse time)
+    fn unresolved_item_type_name(&self) -> Option<&crate::namespaces::QName> {
+        None
     }
 }
 
@@ -343,6 +347,8 @@ pub struct XsdListType {
     name: Option<QName>,
     /// Item type for list elements
     item_type: Arc<dyn SimpleType + Send + Sync>,
+    /// Unresolved item type name (couldn't be resolved at parse time, needs post-include resolution)
+    pub unresolved_item_type_name: Option<QName>,
     /// Facets constraining the list
     facet_set: FacetSet,
     /// Building errors
@@ -357,6 +363,7 @@ impl XsdListType {
         Self {
             name: None,
             item_type,
+            unresolved_item_type_name: None,
             facet_set: FacetSet {
                 white_space: Some(WhiteSpace::Collapse),
                 ..Default::default()
@@ -515,6 +522,10 @@ impl SimpleType for XsdListType {
 
     fn item_type(&self) -> Option<&Arc<dyn SimpleType + Send + Sync>> {
         Some(&self.item_type)
+    }
+
+    fn unresolved_item_type_name(&self) -> Option<&crate::namespaces::QName> {
+        self.unresolved_item_type_name.as_ref()
     }
 }
 
