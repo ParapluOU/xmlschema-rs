@@ -662,6 +662,57 @@ fn parse_inline_complex_type(schema: &XsdSchema, elem: &Element) -> Option<XsdCo
     Some(complex_type)
 }
 
+/// Apply inline facets (enumeration, pattern, length constraints) to an atomic type
+fn apply_inline_facets(mut atomic: XsdAtomicType, restriction_elem: &Element) -> XsdAtomicType {
+    let mut enumeration: Vec<String> = Vec::new();
+    let mut patterns: Vec<String> = Vec::new();
+
+    for facet_child in &restriction_elem.children {
+        match facet_child.local_name() {
+            xsd_elements::ENUMERATION => {
+                if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
+                    enumeration.push(value.to_string());
+                }
+            }
+            xsd_elements::PATTERN => {
+                if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
+                    patterns.push(value.to_string());
+                }
+            }
+            xsd_elements::MIN_LENGTH => {
+                if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
+                    if let Ok(len) = value.parse() {
+                        atomic = atomic.with_min_length(len);
+                    }
+                }
+            }
+            xsd_elements::MAX_LENGTH => {
+                if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
+                    if let Ok(len) = value.parse() {
+                        atomic = atomic.with_max_length(len);
+                    }
+                }
+            }
+            xsd_elements::LENGTH => {
+                if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
+                    if let Ok(len) = value.parse() {
+                        atomic = atomic.with_length(len);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !enumeration.is_empty() {
+        atomic = atomic.with_enumeration(enumeration);
+    }
+    if let Some(pattern) = patterns.into_iter().find(|p| regex::Regex::new(p).is_ok()) {
+        atomic = atomic.with_pattern(&pattern).expect("pattern already validated");
+    }
+    atomic
+}
+
 /// Parse an inline (anonymous) simple type
 fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dyn SimpleType + Send + Sync>> {
     // Look for union
@@ -743,77 +794,62 @@ fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dy
     // Look for restriction
     for child in &elem.children {
         if child.local_name() == xsd_elements::RESTRICTION {
-            let base_attr = child.get_attribute(xsd_attrs::BASE);
-
-            let builtin_name = if let Some(base_str) = base_attr {
-                let (_base_ns, base_local) = schema.resolve_qname(base_str);
-                resolve_builtin_name(&base_local).unwrap_or("string")
-            } else {
-                "string"
-            };
-
-            // Create atomic type with facets
-            let mut atomic = match XsdAtomicType::new(builtin_name) {
-                Ok(a) => a,
-                Err(_) => return None,
-            };
-
-            // Parse facets
-            let mut enumeration: Vec<String> = Vec::new();
-            let mut patterns: Vec<String> = Vec::new();
-            let mut min_length: Option<usize> = None;
-            let mut max_length: Option<usize> = None;
-            let mut length: Option<usize> = None;
-
-            for facet_child in &child.children {
-                match facet_child.local_name() {
-                    xsd_elements::ENUMERATION => {
-                        if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
-                            enumeration.push(value.to_string());
-                        }
+            if let Some(base_str) = child.get_attribute(xsd_attrs::BASE) {
+                // base= attribute: resolve to builtin or named type
+                let (base_ns, base_local) = schema.resolve_qname(base_str);
+                if let Some(builtin_name) = resolve_builtin_name(&base_local) {
+                    // XSD builtin base type — create atomic type with facets
+                    let mut atomic = match XsdAtomicType::new(builtin_name) {
+                        Ok(a) => a,
+                        Err(_) => return None,
+                    };
+                    atomic = apply_inline_facets(atomic, child);
+                    return Some(Arc::new(atomic));
+                } else {
+                    // Named type base (e.g., base="m:length") — look up in schemas
+                    let base_qname = QName::new(base_ns.map(|s| s.to_string()), base_local);
+                    let found_type = schema.maps.global_maps.types.get(&base_qname)
+                        .or_else(|| {
+                            for (_ns, import) in &schema.imports {
+                                if let Some(ref imported) = import.schema {
+                                    if let Some(t) = imported.maps.global_maps.types.get(&base_qname) {
+                                        return Some(t);
+                                    }
+                                }
+                            }
+                            None
+                        });
+                    if let Some(super::globals::GlobalType::Simple(base_st)) = found_type {
+                        // Return the named type as the restriction base
+                        // (facets like enumeration are refinements of this named type)
+                        return Some(Arc::clone(base_st));
                     }
-                    xsd_elements::PATTERN => {
-                        if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
-                            patterns.push(format!("^{}$", value));
-                        }
-                    }
-                    xsd_elements::MIN_LENGTH => {
-                        if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
-                            min_length = value.parse().ok();
-                        }
-                    }
-                    xsd_elements::MAX_LENGTH => {
-                        if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
-                            max_length = value.parse().ok();
-                        }
-                    }
-                    xsd_elements::LENGTH => {
-                        if let Some(value) = facet_child.get_attribute(xsd_attrs::VALUE) {
-                            length = value.parse().ok();
-                        }
-                    }
-                    _ => {}
+                    // Fallback: default to string
+                    let mut atomic = match XsdAtomicType::new("string") {
+                        Ok(a) => a,
+                        Err(_) => return None,
+                    };
+                    atomic = apply_inline_facets(atomic, child);
+                    return Some(Arc::new(atomic));
                 }
+            } else {
+                // No base= attribute: check for nested <xs:simpleType> as base
+                // This handles patterns like:
+                // <xs:restriction><xs:simpleType><xs:list itemType="m:X"/></xs:simpleType></xs:restriction>
+                let nested_base = child.children.iter()
+                    .find(|c| c.local_name() == xsd_elements::SIMPLE_TYPE)
+                    .and_then(|nested| parse_inline_simple_type(schema, nested));
+                if let Some(base_type) = nested_base {
+                    return Some(base_type);
+                }
+                // Fallback: default to string with facets
+                let mut atomic = match XsdAtomicType::new("string") {
+                    Ok(a) => a,
+                    Err(_) => return None,
+                };
+                atomic = apply_inline_facets(atomic, child);
+                return Some(Arc::new(atomic));
             }
-
-            // Apply facets
-            if !enumeration.is_empty() {
-                atomic = atomic.with_enumeration(enumeration);
-            }
-            if let Some(pattern) = patterns.into_iter().find(|p| regex::Regex::new(p).is_ok()) {
-                atomic = atomic.with_pattern(&pattern).expect("pattern already validated");
-            }
-            if let Some(len) = min_length {
-                atomic = atomic.with_min_length(len);
-            }
-            if let Some(len) = max_length {
-                atomic = atomic.with_max_length(len);
-            }
-            if let Some(len) = length {
-                atomic = atomic.with_length(len);
-            }
-
-            return Some(Arc::new(atomic));
         }
     }
 
