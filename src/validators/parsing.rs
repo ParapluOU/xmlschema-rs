@@ -719,6 +719,7 @@ fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dy
     for child in &elem.children {
         if child.local_name() == "union" {
             let mut member_types: Vec<Arc<dyn SimpleType + Send + Sync>> = Vec::new();
+            let mut unresolved_names: Vec<QName> = Vec::new();
 
             // Parse memberTypes attribute (references to named types)
             if let Some(member_types_str) = child.get_attribute("memberTypes") {
@@ -729,9 +730,24 @@ fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dy
                             member_types.push(Arc::new(st));
                         }
                     } else {
-                        let type_qname = QName::new(_type_ns.map(|s| s.to_string()), type_local);
-                        if let Some(GlobalType::Simple(st)) = schema.maps.global_maps.types.get(&type_qname) {
+                        let type_qname = QName::new(_type_ns.map(|s| s.to_string()), type_local.clone());
+                        // Search current schema and imports for the named type
+                        let found = schema.maps.global_maps.types.get(&type_qname)
+                            .or_else(|| {
+                                for (_ns, import) in &schema.imports {
+                                    if let Some(ref imported) = import.schema {
+                                        if let Some(t) = imported.maps.global_maps.types.get(&type_qname) {
+                                            return Some(t);
+                                        }
+                                    }
+                                }
+                                None
+                            });
+                        if let Some(super::globals::GlobalType::Simple(st)) = found {
                             member_types.push(Arc::clone(st));
+                        } else {
+                            // Store unresolved name for post-include resolution
+                            unresolved_names.push(type_qname);
                         }
                     }
                 }
@@ -746,8 +762,10 @@ fn parse_inline_simple_type(schema: &XsdSchema, elem: &Element) -> Option<Arc<dy
                 }
             }
 
-            if !member_types.is_empty() {
-                return Some(Arc::new(super::simple_types::XsdUnionType::new(member_types)));
+            if !member_types.is_empty() || !unresolved_names.is_empty() {
+                let mut union = super::simple_types::XsdUnionType::new(member_types);
+                union.unresolved_member_names = unresolved_names;
+                return Some(Arc::new(union));
             }
         }
     }

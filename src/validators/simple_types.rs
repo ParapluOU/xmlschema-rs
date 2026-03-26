@@ -158,6 +158,12 @@ pub trait SimpleType: TypeValidator {
     fn member_types(&self) -> &[Arc<dyn SimpleType + Send + Sync>] {
         &[]
     }
+
+    /// For Union types: get unresolved member type names (couldn't be resolved at parse time)
+    /// These need post-include resolution
+    fn unresolved_member_names(&self) -> &[crate::namespaces::QName] {
+        &[]
+    }
 }
 
 // =============================================================================
@@ -523,6 +529,8 @@ pub struct XsdUnionType {
     name: Option<QName>,
     /// Member types
     member_types: Vec<Arc<dyn SimpleType + Send + Sync>>,
+    /// Unresolved member type names (from memberTypes attribute, couldn't be resolved at parse time)
+    pub unresolved_member_names: Vec<QName>,
     /// Facets constraining the union
     facet_set: FacetSet,
     /// Building errors
@@ -537,6 +545,7 @@ impl XsdUnionType {
         Self {
             name: None,
             member_types,
+            unresolved_member_names: Vec::new(),
             facet_set: FacetSet {
                 white_space: Some(WhiteSpace::Collapse),
                 ..Default::default()
@@ -544,6 +553,11 @@ impl XsdUnionType {
             errors: Vec::new(),
             built: true,
         }
+    }
+
+    /// Add a resolved member type
+    pub fn add_member(&mut self, member: Arc<dyn SimpleType + Send + Sync>) {
+        self.member_types.push(member);
     }
 
     /// Create a named union type
@@ -663,6 +677,10 @@ impl SimpleType for XsdUnionType {
 
     fn member_types(&self) -> &[Arc<dyn SimpleType + Send + Sync>] {
         &self.member_types
+    }
+
+    fn unresolved_member_names(&self) -> &[crate::namespaces::QName] {
+        &self.unresolved_member_names
     }
 }
 
