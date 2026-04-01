@@ -112,13 +112,29 @@ impl Document {
         let mut element_stack: Vec<Element> = Vec::new();
         let mut buf = Vec::new();
 
+        // Track accumulated namespace context (inherited from ancestors)
+        let mut ns_stack: Vec<NamespaceContext> = vec![NamespaceContext::new()];
+
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
-                    let element = Self::parse_element(&e, &reader)?;
+                    let mut element = Self::parse_element(&e, &reader)?;
+                    // Merge parent namespaces so attribute prefix lookup works
+                    if let Some(parent_ns) = ns_stack.last() {
+                        for (prefix, uri) in parent_ns.iter() {
+                            if element.namespaces.get_namespace(prefix).is_none() {
+                                element.namespaces.add_prefix(prefix, uri);
+                            }
+                        }
+                    }
+                    // Resolve any unresolved attribute prefixes now that we have full context
+                    Self::resolve_attribute_namespaces(&mut element);
+                    // Push this element's namespace context for children
+                    ns_stack.push(element.namespaces.clone());
                     element_stack.push(element);
                 }
                 Ok(Event::End(_)) => {
+                    ns_stack.pop();
                     if let Some(current) = element_stack.pop() {
                         if let Some(parent) = element_stack.last_mut() {
                             parent.add_child(current);
@@ -129,7 +145,16 @@ impl Document {
                     }
                 }
                 Ok(Event::Empty(e)) => {
-                    let element = Self::parse_element(&e, &reader)?;
+                    let mut element = Self::parse_element(&e, &reader)?;
+                    // Merge parent namespaces
+                    if let Some(parent_ns) = ns_stack.last() {
+                        for (prefix, uri) in parent_ns.iter() {
+                            if element.namespaces.get_namespace(prefix).is_none() {
+                                element.namespaces.add_prefix(prefix, uri);
+                            }
+                        }
+                    }
+                    Self::resolve_attribute_namespaces(&mut element);
                     if let Some(parent) = element_stack.last_mut() {
                         parent.add_child(element);
                     } else {
@@ -199,17 +224,38 @@ impl Document {
             } else if let Some(prefix) = attr_name.strip_prefix("xmlns:") {
                 element.namespaces.add_prefix(prefix, &attr_value);
             } else {
-                // Regular attribute
-                let attr_qname = if let Some((_prefix, local)) = attr_name.split_once(':') {
-                    QName::local(local) // Namespace will be resolved later
-                } else {
-                    QName::local(attr_name)
-                };
+                // Regular attribute — store with raw name; namespace resolved after
+                // parent namespaces are merged (in resolve_attribute_namespaces)
+                let attr_qname = QName::local(attr_name);
                 element.attributes.insert(attr_qname, attr_value);
             }
         }
 
         Ok(element)
+    }
+
+    /// Resolve attribute namespaces using the element's accumulated namespace context.
+    ///
+    /// During parsing, prefixed attributes like `xlink:href` are stored as
+    /// `QName::local("xlink:href")` (raw prefixed name, no namespace resolved).
+    /// After merging parent namespace declarations, we resolve each prefix
+    /// to its full namespace URI.
+    fn resolve_attribute_namespaces(element: &mut Element) {
+        let mut resolved = HashMap::new();
+        for (qname, value) in element.attributes.drain() {
+            let new_qname = if let Some((prefix, local)) = qname.local_name.split_once(':') {
+                if let Some(ns) = element.namespaces.get_namespace(prefix) {
+                    QName::namespaced(ns, local)
+                } else {
+                    // Prefix not found — keep as-is (will use local_name = "prefix:local")
+                    qname
+                }
+            } else {
+                qname
+            };
+            resolved.insert(new_qname, value);
+        }
+        element.attributes = resolved;
     }
 
     /// Get the root element
