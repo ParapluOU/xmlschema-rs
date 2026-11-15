@@ -594,6 +594,10 @@ fn parse_inline_complex_type(schema: &XsdSchema, elem: &Element) -> Option<XsdCo
                 group.particles.push(GroupParticle::Group(Arc::new(ref_group)));
             }
         } else {
+            // The compositor's own minOccurs/maxOccurs: `<xs:choice minOccurs="0"
+            // maxOccurs="unbounded">` directly under a complex type is optional and
+            // repeats, like one nested in a sequence.
+            group.occurs = parse_occurs_option(model_elem);
             parse_content_model(schema, model_elem, &mut group);
         }
     }
@@ -631,6 +635,7 @@ fn parse_inline_complex_type(schema: &XsdSchema, elem: &Element) -> Option<XsdCo
                         let restriction_model = find_content_model_element(grandchild);
                         if let Some(model_elem) = restriction_model {
                             let mut restriction_group = XsdGroup::new(ModelType::from_tag(model_elem.local_name()).unwrap_or(ModelType::Sequence));
+                            restriction_group.occurs = parse_occurs_option(model_elem);
                             parse_content_model(schema, model_elem, &mut restriction_group);
                             complex_type.content = ComplexContent::Group(Arc::new(restriction_group));
                         }
@@ -646,6 +651,7 @@ fn parse_inline_complex_type(schema: &XsdSchema, elem: &Element) -> Option<XsdCo
                         let extension_model = find_content_model_element(grandchild);
                         if let Some(model_elem) = extension_model {
                             let mut extension_group = XsdGroup::new(ModelType::from_tag(model_elem.local_name()).unwrap_or(ModelType::Sequence));
+                            extension_group.occurs = parse_occurs_option(model_elem);
                             parse_content_model(schema, model_elem, &mut extension_group);
                             complex_type.content = ComplexContent::Group(Arc::new(extension_group));
                         }
@@ -937,6 +943,10 @@ fn parse_complex_type(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
                 group.particles.push(GroupParticle::Group(Arc::new(ref_group)));
             }
         } else {
+            // The compositor's own minOccurs/maxOccurs: `<xs:choice minOccurs="0"
+            // maxOccurs="unbounded">` directly under a complex type is optional and
+            // repeats, like one nested in a sequence.
+            group.occurs = parse_occurs_option(model_elem);
             parse_content_model(schema, model_elem, &mut group);
         }
     }
