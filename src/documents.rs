@@ -19,6 +19,14 @@ pub struct Element {
     pub text: Option<String>,
     /// Child elements
     pub children: Vec<Element>,
+    /// The text before the first child element (or all of it, with no children),
+    /// exactly as written. With each child's [`tail`](Self::tail) this is the
+    /// element's content in document order, which `text` alone cannot give for mixed
+    /// content.
+    pub lead: Option<String>,
+    /// The text that follows this element inside its parent, up to the next sibling
+    /// or the parent's end, exactly as written.
+    pub tail: Option<String>,
     /// Namespace context for this element
     pub namespaces: NamespaceContext,
 }
@@ -31,6 +39,8 @@ impl Element {
             attributes: HashMap::new(),
             text: None,
             children: Vec::new(),
+            lead: None,
+            tail: None,
             namespaces: NamespaceContext::new(),
         }
     }
@@ -106,7 +116,9 @@ impl Document {
     /// Parse an XML document from bytes
     pub fn parse(xml: &[u8]) -> Result<Self> {
         let mut reader = Reader::from_reader(xml);
-        reader.trim_text(true);
+        // Text is read as written: in mixed content the spaces around an inline
+        // element are content. `Element::text` is still trimmed, as it always was.
+        reader.trim_text(false);
 
         let mut doc = Document::new();
         let mut element_stack: Vec<Element> = Vec::new();
@@ -169,8 +181,14 @@ impl Document {
                             .map_err(|e| Error::Xml(format!("Failed to unescape text: {}", e)))?
                             .to_string();
                         if !text.trim().is_empty() {
-                            current.set_text(text);
+                            current.set_text(text.trim().to_string());
                         }
+                        // In document order: after the last child so far, or before any.
+                        let slot = match current.children.last_mut() {
+                            Some(last) => &mut last.tail,
+                            None => &mut current.lead,
+                        };
+                        slot.get_or_insert_with(String::new).push_str(&text);
                     }
                 }
                 Ok(Event::Eof) => break,
@@ -342,5 +360,31 @@ mod tests {
 
         assert_eq!(elem.local_name(), "test");
         assert_eq!(elem.text.as_deref(), Some("content"));
+    }
+}
+
+#[cfg(test)]
+mod mixed_content_tests {
+    use super::*;
+
+    #[test]
+    fn interleaved_text_is_kept_in_document_order() {
+        let doc = Document::from_string("<p>It contains <b>formatted</b> text and <i>more</i> after.</p>").unwrap();
+        let p = doc.root.unwrap();
+        assert_eq!(p.lead.as_deref(), Some("It contains "), "the text before the first child, spaces and all");
+        assert_eq!(p.children[0].lead.as_deref(), Some("formatted"));
+        assert_eq!(p.children[0].tail.as_deref(), Some(" text and "));
+        assert_eq!(p.children[1].tail.as_deref(), Some(" after."));
+        // `text` keeps its old meaning for a leaf: its trimmed text.
+        assert_eq!(p.children[0].text.as_deref(), Some("formatted"));
+    }
+
+    #[test]
+    fn a_leaf_and_an_empty_element_have_no_tail_of_their_own() {
+        let doc = Document::from_string("<r><a>  padded  </a><b/></r>").unwrap();
+        let r = doc.root.unwrap();
+        assert_eq!(r.children[0].text.as_deref(), Some("padded"), "trimmed, as before");
+        assert_eq!(r.children[0].lead.as_deref(), Some("  padded  "), "as written");
+        assert_eq!((r.children[0].tail.as_deref(), r.children[1].tail.as_deref(), r.lead.as_deref()), (None, None, None));
     }
 }
