@@ -487,6 +487,13 @@ impl XsdAttributeGroup {
     }
 
     /// Get pending attribute group references
+    /// The references this group has not resolved yet, to be rewritten — which
+    /// is what applying an `xs:redefine` to an attribute group does: a
+    /// reference to the name being redefined means the original.
+    pub fn pending_group_refs_mut(&mut self) -> &mut Vec<QName> {
+        &mut self.pending_group_refs
+    }
+
     pub fn pending_group_refs(&self) -> &[QName] {
         &self.pending_group_refs
     }

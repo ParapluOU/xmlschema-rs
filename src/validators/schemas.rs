@@ -170,8 +170,14 @@ pub struct SchemaImport {
 pub struct SchemaInclude {
     /// Location (schemaLocation)
     pub location: String,
-    /// Included schema
-    pub schema: Arc<XsdSchema>,
+    /// The included schema, where it is kept apart.
+    ///
+    /// `None` here, and that is what including means: the components of an
+    /// included schema **become** this schema's, and are merged into its global
+    /// maps as it is loaded. What the record is for is saying what this schema
+    /// asked for, which a reader of it — or anything reporting on a bundle —
+    /// cannot otherwise see.
+    pub schema: Option<Arc<XsdSchema>>,
 }
 
 /// Redefine record for schema redefinitions
@@ -182,12 +188,16 @@ pub struct SchemaInclude {
 /// - Complex types (must derive from themselves)
 /// - Groups (must contain exactly one self-reference)
 /// - Attribute groups (must contain exactly one self-reference)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SchemaRedefine {
     /// Location (schemaLocation)
     pub location: String,
-    /// The included schema (before redefinitions)
-    pub schema: Arc<XsdSchema>,
+    /// The included schema, before the redefinitions were applied to it.
+    ///
+    /// `None` while the schema it names has not been loaded: schemas are
+    /// loaded iteratively from a worklist, so a redefine is recorded when it is
+    /// read and the redefinitions are applied once everything is merged.
+    pub schema: Option<Arc<XsdSchema>>,
     /// Components to be redefined
     pub redefinitions: Vec<RedefinedComponent>,
 }

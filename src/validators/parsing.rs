@@ -14,7 +14,7 @@ use super::elements::{ElementType, XsdElement};
 use super::globals::GlobalType;
 use super::groups::{ElementParticle, GroupParticle, ModelType, XsdGroup};
 use super::particles::Occurs;
-use super::schemas::{DerivationDefault, FormDefault, RedefinedComponent, SchemaRedefine, XsdSchema};
+use super::schemas::{DerivationDefault, FormDefault, RedefinedComponent, SchemaInclude, SchemaRedefine, XsdSchema};
 use super::simple_types::{SimpleType, XsdAtomicType, XsdListType, XsdRestrictedType, XsdUnionType};
 use super::builtins::XSD_NAMESPACE;
 use super::wildcards::{NamespaceConstraint, ProcessContents, XsdAnyAttribute, XsdAnyElement};
@@ -220,6 +220,10 @@ impl XsdSchema {
         // Shared set to track loaded files (prevents circular includes)
         let loaded_paths = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
 
+        // Every redefinition met on the way, in the order the schemas were
+        // read, to be applied once they are all merged.
+        let mut redefinitions: Vec<SchemaRedefine> = Vec::new();
+
         // Queue of schemas to process (iterative worklist algorithm)
         let mut pending: VecDeque<PendingSchemaWork> = VecDeque::new();
 
@@ -289,6 +293,8 @@ impl XsdSchema {
                 });
             }
 
+            redefinitions.extend(schema.redefines.iter().cloned());
+
             if root_schema.is_none() {
                 root_schema = Some(schema);
             } else {
@@ -302,6 +308,14 @@ impl XsdSchema {
         let mut schema = root_schema.ok_or_else(|| {
             Error::Parse(ParseError::new("Failed to parse any schema"))
         })?;
+
+        // Deepest first: a schema's own redefinitions are applied before those
+        // of the schema that includes it, so a shell redefining what it
+        // includes redefines what that already settled on. The worklist reads
+        // breadth-first from the root, so the order it met them in, reversed,
+        // is that.
+        redefinitions.reverse();
+        apply_redefinitions(&mut schema, redefinitions);
 
         // Build the schema
         schema.build()?;
@@ -1547,6 +1561,10 @@ fn parse_include(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
     // Don't add duplicates
     if !schema.pending_include_locations.contains(&location.to_string()) {
         schema.pending_include_locations.push(location.to_string());
+        schema.includes.push(SchemaInclude {
+            location: location.to_string(),
+            schema: None,
+        });
     }
 
     Ok(())
@@ -1558,9 +1576,11 @@ fn parse_include(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
 /// from the included schema. The redefined components must derive from
 /// themselves (for types) or contain a self-reference (for groups).
 ///
-/// This only collects the redefine location. The actual loading is done
-/// iteratively by `parse_file_internal` to avoid stack overflow.
-/// Redefinition elements (children of xs:redefine) are processed inline.
+/// The schema at the location is loaded like an include; the redefinitions
+/// themselves are kept as they were written and applied by
+/// [`apply_redefinitions`] once every schema has been merged, because a
+/// redefinition is about a component that has not been read yet when the
+/// `xs:redefine` is.
 fn parse_redefine(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
     let location = match elem.get_attribute(xsd_attrs::SCHEMA_LOCATION) {
         Some(loc) => loc,
@@ -1575,17 +1595,167 @@ fn parse_redefine(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
         schema.pending_redefine_locations.push(location.to_string());
     }
 
-    // NOTE: Redefinition children (simpleType, complexType, group, attributeGroup
-    // within xs:redefine) would normally be processed here. However, since we're
-    // deferring the schema loading, the redefinitions cannot be fully processed
-    // until after all schemas are loaded. For now, we simply include the schema
-    // and don't support actual redefinitions (the redefinition elements are ignored).
-    //
-    // TODO: To properly support xs:redefine, we would need to:
-    // 1. Store the redefinition Element data
-    // 2. Process redefinitions after all schemas are merged in parse_file_internal
+    let mut redefinitions = Vec::new();
+    for child in &elem.children {
+        let Some(name) = child.get_attribute(xsd_attrs::NAME) else {
+            // Annotations and whatever else sits in a redefine.
+            continue;
+        };
+        let qname = make_qname(schema, name);
+        let elem = child.clone();
+        redefinitions.push(match child.local_name() {
+            xsd_elements::GROUP => RedefinedComponent::Group { qname, elem },
+            xsd_elements::ATTRIBUTE_GROUP => RedefinedComponent::AttributeGroup { qname, elem },
+            xsd_elements::COMPLEX_TYPE => RedefinedComponent::ComplexType { qname, elem },
+            xsd_elements::SIMPLE_TYPE => RedefinedComponent::SimpleType { qname, elem },
+            _ => continue,
+        });
+    }
+    if !redefinitions.is_empty() {
+        schema.redefines.push(SchemaRedefine {
+            location: location.to_string(),
+            schema: None,
+            redefinitions,
+        });
+    }
 
     Ok(())
+}
+
+/// Apply every redefinition, once all the schemas are loaded and merged.
+///
+/// `xs:redefine` is an include whose children **replace** the definitions they
+/// name — and inside such a child, a reference to the name being redefined
+/// means the *original*. That is the whole idiom, and DITA is built out of it:
+///
+/// ```xml
+/// <xs:redefine schemaLocation="commonElementGrp.xsd">
+///   <xs:group name="ph">
+///     <xs:choice>
+///       <xs:group ref="ph"/>        <!-- the original `ph` -->
+///       <xs:group ref="hi-d-ph"/>   <!-- plus this domain's -->
+///     </xs:choice>
+///   </xs:group>
+/// </xs:redefine>
+/// ```
+///
+/// So the original is kept under a name of its own and the self-reference is
+/// pointed at that, which both gives the redefinition its meaning and stops the
+/// reference from being a cycle through the name it is defining.
+///
+/// Dropping the redefinitions — which is what happened before — leaves every
+/// such group as the base schema wrote it. Nothing fails: the schema compiles,
+/// and every element the domain added is quietly not allowed anywhere.
+///
+/// Where two schemas in one load redefine the same name, each takes what the
+/// one before it left, in the order they were read. That is right for a chain
+/// (a shell redefining what it includes) and arbitrary for siblings, which the
+/// specification does not really describe either.
+fn apply_redefinitions(schema: &mut XsdSchema, redefines: Vec<SchemaRedefine>) {
+    for redefine in redefines {
+        for component in redefine.redefinitions {
+            match component {
+                RedefinedComponent::Group { qname, elem } => {
+                    let Some(original) = schema.maps.global_maps.groups.remove(&qname) else {
+                        schema.parse_error(ParseError::new(format!(
+                            "xs:redefine redefines the group `{}`, which `{}` does not declare",
+                            qname.local_name, redefine.location
+                        )));
+                        continue;
+                    };
+                    let kept = aside(&qname, &schema.maps.global_maps.groups);
+                    if parse_group(schema, &elem).is_err() {
+                        // Put the original back rather than lose both.
+                        schema.maps.global_maps.groups.insert(qname, original);
+                        continue;
+                    }
+                    let Some(redefined) = schema.maps.global_maps.groups.get(&qname).cloned() else {
+                        continue;
+                    };
+                    let mut redefined = (*redefined).clone();
+                    point_group_at(&mut redefined, &qname, &kept);
+                    redefined.redefine = Some(Arc::clone(&original));
+                    schema.maps.global_maps.groups.insert(kept, original);
+                    schema.maps.global_maps.groups.insert(qname, Arc::new(redefined));
+                }
+                RedefinedComponent::AttributeGroup { qname, elem } => {
+                    let Some(original) = schema.maps.global_maps.attribute_groups.remove(&qname) else {
+                        schema.parse_error(ParseError::new(format!(
+                            "xs:redefine redefines the attribute group `{}`, which `{}` does not declare",
+                            qname.local_name, redefine.location
+                        )));
+                        continue;
+                    };
+                    let kept = aside(&qname, &schema.maps.global_maps.attribute_groups);
+                    if parse_attribute_group(schema, &elem).is_err() {
+                        schema.maps.global_maps.attribute_groups.insert(qname, original);
+                        continue;
+                    }
+                    let Some(redefined) = schema.maps.global_maps.attribute_groups.get(&qname).cloned() else {
+                        continue;
+                    };
+                    let mut redefined = (*redefined).clone();
+                    point_attribute_group_at(&mut redefined, &qname, &kept);
+                    redefined.redefine = Some(Arc::clone(&original));
+                    schema.maps.global_maps.attribute_groups.insert(kept, original);
+                    schema.maps.global_maps.attribute_groups.insert(qname, Arc::new(redefined));
+                }
+                // A type redefinition says the new type derives from the one it
+                // replaces. Nothing in the schemas we carry does it, and doing
+                // it wrong would silently change what validates, so it is
+                // refused by name instead.
+                RedefinedComponent::ComplexType { qname, .. } | RedefinedComponent::SimpleType { qname, .. } => {
+                    schema.parse_error(ParseError::new(format!(
+                        "xs:redefine of the type `{}` in `{}` is not supported; the type keeps its original definition",
+                        qname.local_name, redefine.location
+                    )));
+                }
+            }
+        }
+    }
+}
+
+/// A name of its own for the original of a redefined component, which nothing
+/// in a schema can be called: `#` cannot appear in an XML name.
+fn aside<T>(qname: &QName, taken: &std::collections::HashMap<QName, T>) -> QName {
+    let mut nth = 0;
+    loop {
+        let candidate = QName {
+            namespace: qname.namespace.clone(),
+            local_name: match nth {
+                0 => format!("{}#redefined", qname.local_name),
+                nth => format!("{}#redefined{nth}", qname.local_name),
+            },
+        };
+        if !taken.contains_key(&candidate) {
+            return candidate;
+        }
+        nth += 1;
+    }
+}
+
+/// Point every reference to `was` inside this group at `now`, however deep.
+fn point_group_at(group: &mut XsdGroup, was: &QName, now: &QName) {
+    if group.group_ref.as_ref() == Some(was) {
+        group.group_ref = Some(now.clone());
+    }
+    for particle in &mut group.particles {
+        if let GroupParticle::Group(nested) = particle {
+            let mut inner = (**nested).clone();
+            point_group_at(&mut inner, was, now);
+            *nested = Arc::new(inner);
+        }
+    }
+}
+
+/// The same for an attribute group, whose references are to other attribute
+/// groups by name.
+fn point_attribute_group_at(group: &mut super::attributes::XsdAttributeGroup, was: &QName, now: &QName) {
+    for reference in group.pending_group_refs_mut().iter_mut() {
+        if reference == was {
+            *reference = now.clone();
+        }
+    }
 }
 
 /// Resolve a schemaLocation relative to a base URL, using catalog if available
