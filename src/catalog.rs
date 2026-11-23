@@ -84,10 +84,38 @@ impl XmlCatalog {
             ))));
         }
 
-        // Process children
-        self.process_catalog_children(&root.children, base_dir)?;
+        // Process children, from the catalog element's own base: `xml:base` on
+        // the root applies to everything in it.
+        let root_base = Self::base_of(root, base_dir);
+        self.process_catalog_children(&root.children, root_base.as_deref())?;
 
         Ok(())
+    }
+
+    /// The base an element's relative URIs resolve against: `xml:base` where it
+    /// carries one, joined onto the base it inherited, and that base otherwise.
+    ///
+    /// Catalogs lean on this. OASIS ships DITA with one catalog at the root of
+    /// the bundle and the directory of each entry in its `xml:base`:
+    ///
+    /// ```xml
+    /// <system systemId="urn:oasis:names:tc:dita:xsd:topicMod.xsd:1.2"
+    ///         uri="topicMod.xsd" xml:base="base/xsd/"/>
+    /// ```
+    ///
+    /// Ignoring it resolves every one of those to a file beside the catalog
+    /// that is not there — and a `schemaLocation` that does not resolve is not
+    /// an error to a schema parser, it simply contributes nothing. The symptom
+    /// is a schema that parses and declares no element at all.
+    fn base_of(element: &crate::documents::Element, inherited: Option<&Path>) -> Option<PathBuf> {
+        // `xml:base`'s local name is `base`, which is how it is read here.
+        match element.get_attribute("base") {
+            Some(given) => Some(match inherited {
+                Some(base) => base.join(given),
+                None => PathBuf::from(given),
+            }),
+            None => inherited.map(Path::to_path_buf),
+        }
     }
 
     /// Process children of a catalog or group element
@@ -97,6 +125,10 @@ impl XmlCatalog {
         base_dir: Option<&Path>,
     ) -> Result<()> {
         for child in children {
+            // Each entry may move its own base, and a group moves it for
+            // everything inside.
+            let here = Self::base_of(child, base_dir);
+            let base_dir = here.as_deref();
             match child.local_name() {
                 "system" => {
                     // <system systemId="..." uri="..."/>
@@ -149,8 +181,8 @@ impl XmlCatalog {
                     }
                 }
                 "group" => {
-                    // <group> - just recurse with same base_dir
-                    // TODO: Handle xml:base attribute on group if present
+                    // A group carries its children's base, which `here` already
+                    // took from its `xml:base`.
                     self.process_catalog_children(&child.children, base_dir)?;
                 }
                 _ => {
@@ -208,6 +240,45 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+
+    /// `xml:base` on an entry moves where its `uri` points, and a group's moves
+    /// it for everything inside.
+    ///
+    /// This is how OASIS ships DITA: one catalog at the root of the bundle,
+    /// every entry naming its own directory in `xml:base`. Ignoring it pointed
+    /// all 694 of DITA 1.2's mappings at files beside the catalog that are not
+    /// there — and a `schemaLocation` that does not resolve is not an error to
+    /// a schema parser, it simply contributes nothing, so the symptom was a
+    /// schema that parsed and declared no element at all.
+    #[test]
+    fn an_entry_resolves_against_its_xml_base() {
+        let catalog_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+    <system systemId="urn:example:topicMod.xsd:1.2" uri="topicMod.xsd" xml:base="base/xsd/"/>
+    <uri name="urn:example:types.xsd" uri="types.xsd" xml:base="common/"/>
+    <system systemId="urn:example:plain.xsd" uri="plain.xsd"/>
+    <group xml:base="technicalContent/xsd/">
+        <system systemId="urn:example:uiDomain.xsd:1.2" uri="uiDomain.xsd"/>
+        <group xml:base="deeper/">
+            <system systemId="urn:example:nested.xsd" uri="nested.xsd"/>
+        </group>
+    </group>
+</catalog>"#;
+        let directory = TempDir::new().expect("a directory");
+        let at = directory.path().join("catalog.xml");
+        let mut file = std::fs::File::create(&at).expect("a file");
+        file.write_all(catalog_xml.as_bytes()).expect("written");
+
+        let catalog = XmlCatalog::from_file(&at).expect("the catalog loads");
+        let expected = |path: &str| directory.path().join(path).to_string_lossy().to_string();
+        assert_eq!(catalog.resolve("urn:example:topicMod.xsd:1.2"), Some(expected("base/xsd/topicMod.xsd").as_str()));
+        assert_eq!(catalog.resolve("urn:example:types.xsd"), Some(expected("common/types.xsd").as_str()));
+        // An entry without one still resolves beside the catalog.
+        assert_eq!(catalog.resolve("urn:example:plain.xsd"), Some(expected("plain.xsd").as_str()));
+        // A group's base applies to its children, and nests.
+        assert_eq!(catalog.resolve("urn:example:uiDomain.xsd:1.2"), Some(expected("technicalContent/xsd/uiDomain.xsd").as_str()));
+        assert_eq!(catalog.resolve("urn:example:nested.xsd"), Some(expected("technicalContent/xsd/deeper/nested.xsd").as_str()));
+    }
 
     #[test]
     fn test_parse_simple_catalog() {

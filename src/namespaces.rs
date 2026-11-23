@@ -12,6 +12,10 @@ pub type NamespaceUri = String;
 /// Namespace prefix
 pub type Prefix = String;
 
+/// The namespace the `xml` prefix is always bound to, declared or not
+/// (XML Namespaces, section 3).
+pub const XML_NAMESPACE: &str = "http://www.w3.org/XML/1998/namespace";
+
 /// Qualified name (QName) - combination of namespace and local name
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QName {
@@ -85,7 +89,19 @@ impl NamespaceContext {
 
     /// Get the namespace for a prefix
     pub fn get_namespace(&self, prefix: &str) -> Option<&str> {
-        self.prefixes.get(prefix).map(|s| s.as_str())
+        if let Some(found) = self.prefixes.get(prefix) {
+            return Some(found.as_str());
+        }
+        // `xml` is bound by the XML specification itself and is almost never
+        // declared: a document may use `xml:base`, `xml:lang` or `xml:space`
+        // without saying anything. Without this an `xml:…` attribute keeps the
+        // prefix in its local name and is invisible to anything asking for it
+        // by name — which is how an OASIS catalog's `xml:base` came to be
+        // ignored, and with it every URN mapping in DITA.
+        if prefix == "xml" {
+            return Some(XML_NAMESPACE);
+        }
+        None
     }
 
     /// Get the default namespace
@@ -125,6 +141,17 @@ impl Default for NamespaceContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `xml` prefix is bound by the specification, declared or not: a
+    /// document may say `xml:base`, `xml:lang` or `xml:space` without
+    /// declaring anything. Without this such an attribute keeps its prefix in
+    /// its local name and is invisible to anything asking for it by name.
+    #[test]
+    fn the_xml_prefix_is_bound_without_being_declared() {
+        let namespaces = NamespaceContext::new();
+        assert_eq!(namespaces.get_namespace("xml"), Some(XML_NAMESPACE));
+        assert_eq!(namespaces.get_namespace("nope"), None);
+    }
 
     #[test]
     fn test_qname_creation() {
