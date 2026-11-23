@@ -1399,6 +1399,11 @@ fn parse_import(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
                 peer_attrs.entry(qn.clone()).or_insert_with(|| Arc::clone(attr));
             }
 
+            // A ring of imports is legal and must not be followed twice: the
+            // load already under way further up is what brings its components.
+            let Some(_importing) = Importing::mark(&resolved_path) else {
+                return Ok(());
+            };
             match load_imported_schema(&resolved_path, Some(ns), schema.source.catalog.clone(), &peer_attrs) {
                 Ok(imported_schema) => {
                     // Update the import record with the loaded schema
@@ -1427,6 +1432,43 @@ fn parse_import(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
 /// schema's already-loaded peer imports. These are injected into the imported
 /// schema's global_maps before build() so that cross-import attribute refs
 /// (like xlink:actuate) can be resolved.
+thread_local! {
+    /// The schemas this thread is in the middle of importing.
+    ///
+    /// Imports may form a ring — `a.xsd` imports `b.xsd` which imports `a.xsd`
+    /// — and that is legal: each contributes its components to the other.
+    /// Loading one, though, goes `parse_import` → `load_imported_schema` →
+    /// parse → `parse_import`, so a ring is unbounded recursion. It does not
+    /// end in an error either: a stack overflow is an abort, which no
+    /// `catch_unwind` catches and no caller survives. Six schemas of the W3C
+    /// test suite are exactly this (`msData/schema/schG7_a.xsd` and company),
+    /// and they took the whole test process down with them.
+    ///
+    /// So a schema already being imported further up is not loaded again: the
+    /// load that is already under way is what provides its components.
+    static IMPORTING: std::cell::RefCell<std::collections::HashSet<PathBuf>> = std::cell::RefCell::new(std::collections::HashSet::new());
+}
+
+/// Marks a schema as being imported for as long as it is held, so that the
+/// mark is dropped even if the parse below panics.
+struct Importing(Option<PathBuf>);
+
+impl Importing {
+    /// Mark `path`, or answer `None` if it is already being imported.
+    fn mark(path: &Path) -> Option<Self> {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        IMPORTING.with(|importing| importing.borrow_mut().insert(canonical.clone())).then(|| Importing(Some(canonical)))
+    }
+}
+
+impl Drop for Importing {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            IMPORTING.with(|importing| importing.borrow_mut().remove(&path));
+        }
+    }
+}
+
 fn load_imported_schema(
     path: &Path,
     expected_namespace: Option<&str>,

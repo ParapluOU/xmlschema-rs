@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The schema for schemas imports the XML namespace's schema by its address on
+  the web:
+
+    <xs:import namespace="http://www.w3.org/XML/1998/namespace"
+               schemaLocation="http://www.w3.org/2001/xml.xsd"/>
+
+  Nothing here reaches the network, and nothing should: a schema that only
+  compiles while w3.org is up is not a schema you can build on. This catalog is
+  how it resolves to the copy beside it — which is what a catalog is for, and
+  what every standard shipped with URN or URL locations relies on.
+-->
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="http://www.w3.org/2001/xml.xsd" uri="xml.xsd"/>
+  <system systemId="http://www.w3.org/2001/xml.xsd" uri="xml.xsd"/>
+  <uri name="http://www.w3.org/2001/XMLSchema.xsd" uri="XMLSchema.xsd"/>
+  <system systemId="http://www.w3.org/2001/XMLSchema.xsd" uri="XMLSchema.xsd"/>
+</catalog>
