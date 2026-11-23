@@ -1,6 +1,18 @@
 //! CLI integration tests
 //!
 //! These tests verify the CLI commands work correctly by running the binary.
+//!
+//! The binary is behind the `cli` feature, because it is the only thing that
+//! wants `clap` — thirteen crates and a proc macro that no library consumer of
+//! this crate should compile for a program it will never run. So these tests
+//! are behind the same feature: without it there is no binary to run, and a
+//! test that shells out to a path that does not exist fails saying
+//! "No such file or directory", which tells nobody anything.
+//!
+//! ```sh
+//! cargo test --features cli
+//! ```
+#![cfg(feature = "cli")]
 
 use std::process::Command;
 use std::path::PathBuf;
