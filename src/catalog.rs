@@ -132,6 +132,19 @@ enum Entry {
 pub struct XmlCatalog {
     entries: Vec<Entry>,
     next: Vec<XmlCatalog>,
+    /// Catalogs this one names that could not be read, and why.
+    ///
+    /// Kept rather than raised. A bundle commonly ships a catalog naming
+    /// modules it does not carry — DITA-LCE's names `machineryIndustry`,
+    /// `subjectScheme` and `xnal`, none of which are in it — and refusing the
+    /// whole catalog for that would make a standard unusable over parts that
+    /// nothing it is asked about needs. (Checked: tolerating them, DITA-LCE
+    /// resolves to the same 265 elements as DITA 1.3.)
+    ///
+    /// Nor is it swallowed: anything that needed the missing catalog fails to
+    /// resolve, and [`missing`](Self::missing) says what was not there, so a
+    /// caller can report it beside whatever went wrong afterwards.
+    missing: Vec<String>,
 }
 
 /// What one catalog had to say about a question.
@@ -320,11 +333,12 @@ impl XmlCatalog {
                 }
                 "nextCatalog" => {
                     if let Some(named) = attribute("catalog") {
-                        // A catalog that cannot be read is said so, rather than
-                        // leaving every identifier it would have resolved to
-                        // fail one at a time somewhere else.
                         let at = against(&base, named);
-                        self.next.push(Self::load(Path::new(&at), seen)?);
+                        match Self::load(Path::new(&at), seen) {
+                            Ok(loaded) => self.next.push(loaded),
+                            // Remembered, not raised: see the note on `missing`.
+                            Err(why) => self.missing.push(format!("{at}: {why}")),
+                        }
                     }
                 }
                 "group" => self.read(&child.children, &base, prefer, seen)?,
@@ -531,6 +545,28 @@ impl XmlCatalog {
     pub fn merge(&mut self, other: &XmlCatalog) {
         self.entries.extend(other.entries.iter().cloned());
         self.next.extend(other.next.iter().cloned());
+        self.missing.extend(other.missing.iter().cloned());
+    }
+
+    /// The catalogs this one, or any it names, could not read — and why.
+    ///
+    /// Empty for a catalog whose every part was there. Anything else is worth
+    /// repeating to whoever handed the bundle over: it is the likeliest reason
+    /// an identifier that should have resolved did not.
+    pub fn missing(&self) -> Vec<String> {
+        let mut all = self.missing.clone();
+        for next in &self.next {
+            all.extend(next.missing());
+        }
+        for entry in &self.entries {
+            match entry {
+                Entry::DelegateSystem { catalog, .. }
+                | Entry::DelegatePublic { catalog, .. }
+                | Entry::DelegateUri { catalog, .. } => all.extend(catalog.missing()),
+                _ => {}
+            }
+        }
+        all
     }
 
     /// Whether the catalog has anything to say.
@@ -1034,19 +1070,36 @@ mod tests {
         assert_eq!(catalog.resolve_uri("urn:example:neither"), None);
     }
 
-    /// A `nextCatalog` that cannot be read is an error, not a catalog quietly
-    /// missing half of what it maps.
+    /// A `nextCatalog` that is not there does not sink the catalog that names
+    /// it — but it is remembered and can be reported.
+    ///
+    /// A bundle commonly ships a catalog naming modules it does not carry:
+    /// DITA-LCE's names three directories that are not in it, and tolerating
+    /// them is what lets it resolve at all. What must not happen is silence,
+    /// and `missing` is how it is broken.
     #[test]
-    fn a_catalog_that_cannot_be_read_is_said_so() {
+    fn a_catalog_that_cannot_be_read_is_remembered() {
         let directory = TempDir::new().expect("a directory");
         let at = write(
             &directory,
             "catalog.xml",
             r#"<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
                  <nextCatalog catalog="absent.xml"/>
+                 <uri name="urn:example:here" uri="here.xsd"/>
                </catalog>"#,
         );
-        assert!(XmlCatalog::from_file(&at).is_err());
+        let catalog = XmlCatalog::from_file(&at).expect("the catalog still loads");
+        assert_eq!(
+            catalog.resolve_uri("urn:example:here"),
+            Some(here(&directory, "here.xsd")),
+            "what it does carry still resolves"
+        );
+        let missing = catalog.missing();
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert!(missing[0].contains("absent.xml"), "it says which: {}", missing[0]);
+        // And one with everything it names has nothing to report.
+        let whole = write(&directory, "whole.xml", r#"<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog"/>"#);
+        assert!(XmlCatalog::from_file(&whole).expect("it loads").missing().is_empty());
     }
 
     #[test]
