@@ -673,6 +673,18 @@ fn parse_inline_complex_type(schema: &XsdSchema, elem: &Element) -> Option<XsdCo
                     }
                     _ => {}
                 }
+                // A `simpleContent` derivation's content is its base's text, not a
+                // model group. Recorded here because `base_type` alone cannot say
+                // it: a `complexContent` extension names a base too.
+                if child.local_name() == xsd_elements::SIMPLE_CONTENT
+                    && matches!(grandchild.local_name(), xsd_elements::EXTENSION | xsd_elements::RESTRICTION)
+                {
+                    if let Some(base) = grandchild.get_attribute(xsd_attrs::BASE) {
+                        if let Some(simple) = simple_content_base(schema, base) {
+                            complex_type.content = ComplexContent::Simple(simple);
+                        }
+                    }
+                }
             }
         }
     }
@@ -1007,6 +1019,18 @@ fn parse_complex_type(schema: &mut XsdSchema, elem: &Element) -> Result<()> {
                         parse_attributes(schema, grandchild, &mut attr_group);
                     }
                     _ => {}
+                }
+                // A `simpleContent` derivation's content is its base's text, not a
+                // model group. Recorded here because `base_type` alone cannot say
+                // it: a `complexContent` extension names a base too.
+                if child.local_name() == xsd_elements::SIMPLE_CONTENT
+                    && matches!(grandchild.local_name(), xsd_elements::EXTENSION | xsd_elements::RESTRICTION)
+                {
+                    if let Some(base) = grandchild.get_attribute(xsd_attrs::BASE) {
+                        if let Some(simple) = simple_content_base(schema, base) {
+                            complex_type.content = ComplexContent::Simple(simple);
+                        }
+                    }
                 }
             }
         }
@@ -2331,6 +2355,33 @@ fn parse_attribute_decl(schema: &XsdSchema, elem: &Element) -> Option<XsdAttribu
     }
 
     Some(attr)
+}
+
+/// The simple type a `simpleContent` derivation's base names, if it names one.
+///
+/// A `simpleContent` type holds text and nothing else says so: its content is not
+/// a model group, so without this it reads back as an empty group — a type whose
+/// label is `Empty` and whose text every reader has to guess at.
+fn simple_content_base(schema: &XsdSchema, base: &str) -> Option<Arc<dyn SimpleType + Send + Sync>> {
+    let (base_ns, base_local) = schema.resolve_qname(base);
+    let qname = if base_ns.is_some() {
+        QName::new(base_ns.map(|ns| ns.to_string()), base_local.to_string())
+    } else if resolve_builtin_name(&base_local).is_some() {
+        QName::namespaced(XSD_NAMESPACE, base_local.to_string())
+    } else {
+        QName::new(schema.target_namespace.clone(), base_local.to_string())
+    };
+    if let Some(found) = schema.maps.lookup_simple_type(&qname) {
+        return Some(Arc::clone(found));
+    }
+    // A builtin the schema has not registered is a simple type all the same.
+    // A base the schema knows as a *complex* type is not: a `simpleContent`
+    // restriction of such a type keeps whatever content its base gave it, and
+    // this says nothing about it rather than guessing at `xs:string`.
+    let builtin = resolve_builtin_name(&base_local)?;
+    XsdAtomicType::with_name(builtin, qname)
+        .ok()
+        .map(|atomic| Arc::new(atomic) as Arc<dyn SimpleType + Send + Sync>)
 }
 
 /// Find the content model element (sequence/choice/all) in a complex type or derivation
